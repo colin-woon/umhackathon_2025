@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime
 import yaml # requires PyYAML
 import re
+from urllib.parse import urlencode # Needed for robust param handling if manual construction was used
 from dotenv import load_dotenv
 import os
 
@@ -28,83 +29,102 @@ def load_config(config_path='config.yaml'):
         exit(1)
 
 # --- API Interaction ---
-def make_safe_filename(topic_string, prefix, suffix):
-    """Creates a safe filename from a topic string."""
-    # Remove source prefix like 'cryptoquant|'
-    cleaned_topic = topic_string.split('|', 1)[-1]
-    # Replace special characters with underscores
-    safe_name = re.sub(r'[/:?=&]', '_', cleaned_topic)
+def make_safe_filename(source, path, suffix):
+    """Creates a safe filename from source and path."""
+    # Replace special characters in path with underscores
+    safe_path = re.sub(r'[/:?=&]', '_', path)
     # Remove consecutive underscores
-    safe_name = re.sub(r'_+', '_', safe_name).strip('_')
-    return f"{prefix}_{safe_name}{suffix}.csv"
+    safe_path = re.sub(r'_+', '_', safe_path).strip('_')
+    return f"{source}_{safe_path}{suffix}.csv"
 
-def fetch_data_from_api(api_key, base_url, source, topic, start_time_ms, end_time_ms, limit=1000):
-    """Fetches data for a single topic from the cybotrade.rs API."""
+# --- Re-Corrected API Interaction Function ---
+def fetch_data_from_api(api_key, base_url, source, path, source_params, start_time_ms, end_time_ms, page_limit=1000): # page_limit is now unused when start/end are primary
+    """Fetches data using start_time and end_time, strictly adhering to API parameter combination rules."""
     headers = {"X-API-KEY": api_key}
-    endpoint_url = f"{base_url}/{source}/{topic}"
-    params = {
-        "start_time": start_time_ms,
-        "end_time": end_time_ms,
-        "limit": limit
-    }
+    endpoint_url = f"{base_url}/{source}/{path}"
 
-    print(f"Fetching: {source}|{topic} from {datetime.fromtimestamp(start_time_ms/1000)} to {datetime.fromtimestamp(end_time_ms/1000)}...")
+    # Base query params only include source-specific ones now
+    base_query_params = {}
+    if source_params:
+        base_query_params.update(source_params)
+
+    print(f"Fetching: {source}/{path} with params {source_params} from {datetime.fromtimestamp(start_time_ms/1000)} to {datetime.fromtimestamp(end_time_ms/1000)}...")
 
     all_data = []
     current_start_time = start_time_ms
 
     while current_start_time < end_time_ms:
-        params["start_time"] = current_start_time
-        params["limit"] = min(limit, 100000) # Adhere to potential API max limit if known
+        # --- FIX #2: Create query params for page request using ONLY start_time, end_time, and source_params ---
+        page_query_params = base_query_params.copy() # Start with source-specific params
+        page_query_params["start_time"] = current_start_time # Update start time for pagination
+        page_query_params["end_time"] = end_time_ms   # Keep original end time
+
+        # --- REMOVED THE LINE ADDING 'limit' HERE ---
+        # page_query_params["limit"] = min(page_limit, 100000) # REMOVED!
+
+        # Display the URL being requested (now without the explicit limit)
+        request_url_display = endpoint_url + "?" + urlencode(page_query_params)
+        print(f"  Paging Request URL (approx): {request_url_display}")
 
         try:
-            response = requests.get(endpoint_url, headers=headers, params=params)
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            # Pass the corrected params (start_time, end_time, source_params only)
+            response = requests.get(endpoint_url, headers=headers, params=page_query_params)
+            response.raise_for_status()
             data = response.json()
 
             if not data or 'data' not in data or not data['data']:
-                print(f"  No more data received for {source}|{topic} starting {datetime.fromtimestamp(current_start_time/1000)}. Stopping fetch for this topic.")
-                break # Exit loop if no data is returned
+                print(f"  No more data received for {source}/{path} starting {datetime.fromtimestamp(current_start_time/1000)}. Stopping fetch.")
+                break
 
             page_data = data.get('data', [])
             all_data.extend(page_data)
-            print(f"  Fetched {len(page_data)} records ending at {datetime.fromtimestamp(page_data[-1]['start_time']/1000) if page_data else 'N/A'}")
+            last_record_time_ms = page_data[-1].get('start_time') if page_data and 'start_time' in page_data[-1] else None
 
-            # --- Pagination Logic ---
-            # Move to the next page. The API seems to use 'start_time' of the *last* record
-            # fetched + 1ms as the start for the next request to avoid overlap.
-            # Adjust if API uses a different pagination method (like next_page tokens).
-            last_record_time = page_data[-1]['start_time']
-            current_start_time = last_record_time + 1 # Move to next millisecond
+            print(f"  Fetched {len(page_data)} records ending approx {datetime.fromtimestamp(last_record_time_ms/1000) if last_record_time_ms else 'N/A'}")
 
+            if not page_data or last_record_time_ms is None:
+                 print("  Stopping pagination due to empty page or missing timestamp.")
+                 break
 
-            # --- Rate Limiting ---
-            time.sleep(0.2) # Add a small delay to respect rate limits (adjust as needed)
+            # --- Pagination Logic Check ---
+            # If the API returns data right up to end_time without needing a limit,
+            # the last record might be >= end_time, or the loop condition will handle it.
+            # If the API *does* have an internal page size limit even when 'limit' is not sent,
+            # this loop *should* still work by advancing start_time.
+            # We might need to add a check if len(page_data) == 0 or if last_record_time stops advancing.
 
+            # Advance start time for the next iteration
+            current_start_time = last_record_time_ms + 1
+
+            time.sleep(0.2) # Rate Limiting
 
         except requests.exceptions.RequestException as e:
-            print(f"  Error fetching {source}|{topic}: {e}")
-            # Decide how to handle errors: break, retry, log, etc.
-            # For simplicity, we break here. Add retries if needed.
-            break
+            print(f"  Error fetching {source}/{path}: {e}")
+            if e.response is not None:
+                print(f"  Response Status Code: {e.response.status_code}")
+                try:
+                    # Try printing error again - crucial for seeing if it changes
+                    print(f"  Response Body: {e.response.json()}")
+                except requests.exceptions.JSONDecodeError:
+                    print(f"  Response Body (non-JSON): {e.response.text}")
+            break # Exit loop on error
         except Exception as e:
             print(f"  An unexpected error occurred: {e}")
-            break # Exit on other unexpected errors
+            break # Exit loop on other errors
 
     if not all_data:
-      print(f"  Warning: No data fetched for {source}|{topic}")
+      print(f"  Warning: No data fetched overall for {source}/{path}")
       return None
 
     df = pd.DataFrame(all_data)
-    # Convert start_time (assuming it's the primary timestamp)
     if 'start_time' in df.columns:
         df['timestamp'] = pd.to_datetime(df['start_time'], unit='ms')
+        df = df.loc[~df.index.duplicated(keep='first')]
         df = df.set_index('timestamp').sort_index()
     else:
-        print(f"  Warning: 'start_time' column not found for {source}|{topic}. Cannot set time index.")
+        print(f"  Warning: 'start_time' column not found for {source}/{path}. Cannot set time index.")
 
     return df
-
 
 # --- Main Execution ---
 if __name__ == "__main__":
@@ -114,69 +134,60 @@ if __name__ == "__main__":
 
     config = load_config(args.config)
 
-    # --- Get API Key ---
     api_key = os.getenv("CYBOTRADE_API_KEY")
     if not api_key:
         print("Error: CYBOTRADE_API_KEY environment variable not set.")
         exit(1)
 
-    # --- Prepare Output Directory ---
     output_dir = config.get('data_directory', 'data')
     os.makedirs(output_dir, exist_ok=True)
     print(f"Data will be saved in: {output_dir}")
 
-    # --- API Base URL ---
-    base_url = "https://api.datasource.cybotrade.rs" # Hardcoded as per docs
+    base_url = "https://api.datasource.cybotrade.rs"
 
-    # --- Define Download Tasks ---
     download_tasks = []
     metrics_config = config.get('metrics_to_download', {})
 
     # Backtest Period
     bt_start = config['backtest_start_time_ms']
     bt_end = config['backtest_end_time_ms']
-    for source, topics in metrics_config.items():
-        for topic in topics:
+    for source, metrics in metrics_config.items():
+        for metric_details in metrics:
+             # Handle potential candle source override/structure
+            actual_source = metric_details.get('source_override', source) # Use override if present
+            path = metric_details['path']
+            params = metric_details.get('params', {}) # Get params dict
             download_tasks.append({
-                "source": source, "topic": topic, "start": bt_start, "end": bt_end, "suffix": "_backtest"
+                "source": actual_source, "path": path, "params": params,
+                "start": bt_start, "end": bt_end, "suffix": "_backtest"
             })
 
     # Forward Test Period
     ft_start = config['forwardtest_start_time_ms']
     ft_end = config['forwardtest_end_time_ms']
-    for source, topics in metrics_config.items():
-        for topic in topics:
+    for source, metrics in metrics_config.items():
+        for metric_details in metrics:
+            actual_source = metric_details.get('source_override', source)
+            path = metric_details['path']
+            params = metric_details.get('params', {})
             download_tasks.append({
-                "source": source, "topic": topic, "start": ft_start, "end": ft_end, "suffix": "_forwardtest"
+                "source": actual_source, "path": path, "params": params,
+                "start": ft_start, "end": ft_end, "suffix": "_forwardtest"
             })
 
-    # --- Execute Downloads ---
     total_tasks = len(download_tasks)
     print(f"\nStarting {total_tasks} download tasks...")
 
     for i, task in enumerate(download_tasks):
         print(f"\n--- Task {i+1}/{total_tasks} ---")
-        source = task['source']
-        # Handle candle source slightly differently if needed based on API structure
-        topic_str = task['topic']
-        if source == 'candles':
-             source_for_url = topic_str.split('|', 1)[0] # e.g., bybit-linear
-             endpoint_path = topic_str.split('|', 1)[1] # e.g., candle?symbol=...
-             source = source_for_url # Adjust source for URL construction
-             topic_to_fetch = endpoint_path
-        else:
-            topic_to_fetch = topic_str # Use the topic directly for other sources
-
 
         df_data = fetch_data_from_api(
-            api_key, base_url, source, topic_to_fetch,
+            api_key, base_url, task['source'], task['path'], task['params'],
             task['start'], task['end']
         )
 
         if df_data is not None and not df_data.empty:
-            # Use original topic_str for filename generation
-            filename_prefix = source if source != 'candles' else topic_str.split('|', 1)[0]
-            filename = make_safe_filename(topic_str, filename_prefix, task['suffix'])
+            filename = make_safe_filename(task['source'], task['path'], task['suffix'])
             filepath = os.path.join(output_dir, filename)
             try:
                 df_data.to_csv(filepath)
@@ -184,6 +195,6 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"  Error saving data to {filepath}: {e}")
         else:
-            print(f"  Skipping save for {source}|{topic_str} due to empty or error state.")
+            print(f"  Skipping save for {task['source']}/{task['path']} due to empty or error state.")
 
     print("\n--- Data download process finished. ---")

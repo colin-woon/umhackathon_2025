@@ -52,21 +52,22 @@ data_files:
   glassnode_active: "glassnode_addresses_active_count"
   glassnode_tx: "glassnode_transactions_count"
   coinglass_oi: "coinglass_futures_openInterest_ohlc-history"
-  coinglass_lsr: "coinglass_futures_longShortRate_history"
+  coinglass_lsr: "coinglass_futures_globalLongShortAccountRatio_history"
 
 # Features to use for HMM model training (column names after data loading/preprocessing)
 # Example - adjust based on actual columns and desired features
+# Features to use for HMM model training (column names after data loading/preprocessing)
 features:
-  - "price_return"            # How much the price changed (already have)
-  - "volatility"              # How volatile the price was (already have)
-  # --- ADDED FEATURES ---
-  - "cryptoquant_funding_rate" # Add the funding rate value
-  - "glassnode_active_value"   # Add the active addresses value
+  - "price_return"            # How much the price changed
+  - "volatility"              # How volatile the price was
+  # --- CORRECTED Feature Names ---
+  - "cryptoquant_funding_rate" # CORRECT name for funding rate column
+  - "glassnode_active_value"   # CORRECT name for active addresses column
 
 # HMM Settings
 hmm_states: 3 # Number of hidden states (e.g., 0=Bear/Consolidation, 1=Bull, 2=High Volatility)
 hmm_covariance_type: "diag" # Options: "spherical", "diag", "full", "tied"
-hmm_iterations: 100
+hmm_iterations: 1000
 
 # Trading Strategy Settings
 trading_fee_percent: 0.0006 # 0.06%

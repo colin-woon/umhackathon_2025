@@ -3,6 +3,7 @@ import numpy as np
 import yaml
 import os
 import argparse
+
 from hmmlearn import hmm # Requires hmmlearn
 # from sklearn.preprocessing import StandardScaler # Optional: If scaling features
 # from sklearn.metrics import accuracy_score # Optional: If evaluating HMM directly
@@ -22,44 +23,54 @@ def load_config(config_path='config.yaml'):
         print(f"Error loading configuration: {e}")
         exit(1)
 
-# --- Data Loading and Preprocessing ---
+# --- Data Loading and Preprocessing (REVISED RENAMING) ---
 def load_and_preprocess_data(config, mode='backtest'):
-    """Loads data from CSVs, merges, and preprocesses."""
+    """Loads data from CSVs, merges, and preprocesses with explicit renaming."""
     data_dir = config['data_directory']
     data_files = config['data_files']
     suffix = f"_{mode}"
 
     all_data = {}
     base_candle_key = 'candles'
+    final_column_names = {} # Keep track of final names for engineer_features
 
-    # Load base candle data first
+    # --- Load Base Candle Data ---
     try:
-        candle_file_base = data_files[base_candle_key]
+        candle_file_base = data_files.get(base_candle_key, None)
+        if not candle_file_base:
+            raise ValueError(f"'{base_candle_key}' missing in config['data_files']")
         candle_path = os.path.join(data_dir, f"{candle_file_base}{suffix}.csv")
         print(f"Loading candles: {candle_path}")
         df_candles = pd.read_csv(candle_path, index_col='timestamp', parse_dates=True)
-        # Ensure OHLCV columns exist (adjust names if needed from API/CSV)
+
         ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
         if not all(col in df_candles.columns for col in ohlcv_cols):
-             # Attempt mapping if 'o', 'h', 'l', 'c', 'v' exist from Coinglass OHLC format
             ohlc_map = {'t':'start_time', 'o':'open', 'h':'high', 'l':'low', 'c':'close', 'v':'volume'}
             if all(col in df_candles.columns for col in ohlc_map.keys()):
-                 df_candles.rename(columns=ohlc_map, inplace=True)
-                 df_candles['close'] = pd.to_numeric(df_candles['close']) # Ensure numeric
-                 print("  Renamed candle columns from t,o,h,l,c,v")
+                df_candles.rename(columns=ohlc_map, inplace=True)
+                print("  Renamed candle columns from t,o,h,l,c,v")
             else:
-                raise ValueError(f"Candle file missing required columns (e.g., {', '.join(ohlcv_cols)})")
-        all_data['candles'] = df_candles[['close', 'volume']].copy() # Keep only close and volume for now
+                 # Check if required columns exist even if not named perfectly
+                 if not ('close' in df_candles.columns and 'volume' in df_candles.columns):
+                    raise ValueError(f"Candle file missing essential 'close' or 'volume' columns")
+        # Ensure numeric types for essential columns
+        df_candles['close'] = pd.to_numeric(df_candles['close'], errors='coerce')
+        df_candles['volume'] = pd.to_numeric(df_candles['volume'], errors='coerce')
+
+        # Store only essential columns with standard names
+        merged_df = df_candles[['close', 'volume']].copy()
+        final_column_names['close'] = 'close'
+        final_column_names['volume'] = 'volume'
         print(f"  Loaded {len(df_candles)} candle records.")
+
     except FileNotFoundError:
         print(f"Error: Base candle file not found: {candle_path}")
-        return None
+        return None, None
     except Exception as e:
         print(f"Error loading candle data: {e}")
-        return None
+        return None, None
 
-    # Load other data files and merge
-    merged_df = all_data['candles']
+    # --- Load and Merge Other Data Files ---
     for key, file_base in data_files.items():
         if key == base_candle_key:
             continue
@@ -68,31 +79,50 @@ def load_and_preprocess_data(config, mode='backtest'):
             print(f"Loading {key}: {file_path}")
             df_temp = pd.read_csv(file_path, index_col='timestamp', parse_dates=True)
 
-            # Select and rename columns to avoid clashes (customize as needed)
-            # Example: keep 'value' column and rename based on key
-            if 'value' in df_temp.columns: # Common in Glassnode/CryptoQuant
-                 df_to_merge = df_temp[['value']].rename(columns={'value': f"{key}_value"})
-            elif 'fundingRate' in df_temp.columns: # Example for funding rates
-                 df_to_merge = df_temp[['fundingRate']].rename(columns={'fundingRate': f"{key}_rate"})
-            elif 'longShortRatio' in df_temp.columns: # Example for Coinglass LSR
-                 df_to_merge = df_temp[['longShortRatio']].rename(columns={'longShortRatio': f"{key}_lsr"})
-            elif 'openInterest' in df_temp.columns: # Example for Coinglass OI
-                 df_to_merge = df_temp[['openInterest']].rename(columns={'openInterest': f"{key}_oi"})
-            # Add more specific column handling based on your downloaded metrics
-            else:
-                 # Attempt to take the first non-timestamp column if 'value' etc. not found
-                 data_cols = [col for col in df_temp.columns if col.lower() not in ['timestamp', 'start_time', 'end_time', 'time']]
-                 if data_cols:
-                      col_to_use = data_cols[0]
-                      df_to_merge = df_temp[[col_to_use]].rename(columns={col_to_use: f"{key}_{col_to_use}"})
-                      print(f"  Using column '{col_to_use}' for key '{key}'")
-                 else:
-                      print(f"  Warning: Could not find suitable data column in {key}. Skipping merge.")
-                      continue
+            col_to_use = None
+            # --- Define TARGET column name explicitly based on key ---
+            target_col_name = None
+            if key == 'cryptoquant_funding':
+                target_col_name = 'cryptoquant_funding_rate' # Desired final name
+                if 'fundingRate' in df_temp.columns: col_to_use = 'fundingRate'
+                elif 'value' in df_temp.columns: col_to_use = 'value'
+            elif key == 'glassnode_active':
+                target_col_name = 'glassnode_active_value' # Desired final name
+                if 'value' in df_temp.columns: col_to_use = 'value'
+                elif 'v' in df_temp.columns: col_to_use = 'v' # Use 'v' if 'value' not present
+            elif key == 'cryptoquant_inflow': # Add specific cases as needed
+                 target_col_name = 'cryptoquant_inflow_value'
+                 if 'value' in df_temp.columns: col_to_use = 'value'
+            elif key == 'glassnode_tx':
+                 target_col_name = 'glassnode_tx_value'
+                 if 'value' in df_temp.columns: col_to_use = 'value'
+                 elif 'v' in df_temp.columns: col_to_use = 'v'
+            elif key == 'coinglass_oi':
+                 target_col_name = 'coinglass_oi_value'
+                 if 'openInterest' in df_temp.columns: col_to_use = 'openInterest'
+                 elif 'c' in df_temp.columns: col_to_use = 'c' # Close OI value
 
-            # Merge using outer join and forward fill NaNs
+
+            # Fallback if no specific logic or column found
+            if col_to_use is None:
+                data_cols = [col for col in df_temp.columns if col.lower() not in ['timestamp', 'start_time', 'end_time', 'time', 'date']] # Exclude 'date' too
+                if data_cols:
+                    col_to_use = data_cols[0]
+                    # Use a generic fallback name if target_col_name wasn't set
+                    if target_col_name is None: target_col_name = f"{key}_generic"
+                    print(f"  Using fallback column '{col_to_use}' for key '{key}', renaming to '{target_col_name}'")
+                else:
+                    print(f"  Warning: Could not find suitable data column in {key}. Skipping merge.")
+                    continue
+
+            # Perform rename and merge
+            df_to_merge = df_temp[[col_to_use]].rename(columns={col_to_use: target_col_name})
+            # Ensure numeric before merge
+            df_to_merge[target_col_name] = pd.to_numeric(df_to_merge[target_col_name], errors='coerce')
+
             merged_df = pd.merge(merged_df, df_to_merge, left_index=True, right_index=True, how='outer')
-            print(f"  Loaded and merged {len(df_temp)} records for {key}.")
+            final_column_names[key] = target_col_name # Store the final name used
+            print(f"  Loaded and merged {len(df_temp)} records for {key} as '{target_col_name}'.")
 
         except FileNotFoundError:
             print(f"Warning: Data file not found for {key}: {file_path}. Skipping.")
@@ -100,37 +130,82 @@ def load_and_preprocess_data(config, mode='backtest'):
             print(f"Warning: Error loading or merging data for {key}: {e}. Skipping.")
 
     # --- Handle Missing Data ---
-    # Forward fill NaNs (common for time series)
+    print(f"\nColumns before ffill: {merged_df.columns.tolist()}")
+    print(f"NaN counts before ffill:\n{merged_df.isna().sum()}")
+    # Forward fill NaNs first (handles gaps within series)
     merged_df.ffill(inplace=True)
-    # Drop any remaining NaNs (e.g., at the start before first value)
-    merged_df.dropna(inplace=True)
+    # Backward fill NaNs next (handles leading NaNs if first value was missing)
+    merged_df.bfill(inplace=True)
+    # Drop any rows where essential data (like price) might still be missing
+    merged_df.dropna(subset=['close'], inplace=True)
+    # Optionally fill remaining NaNs in feature columns with 0 (if bfill wasn't enough)
+    merged_df.fillna(0, inplace=True)
 
-    print(f"\nTotal records after merging and initial NaN handling: {len(merged_df)}")
+
+    print(f"\nTotal records after merging and NaN handling: {len(merged_df)}")
+    print(f"Columns after merge/fill: {merged_df.columns.tolist()}")
     if merged_df.empty:
         print("Error: No data available after loading and merging.")
-        return None
+        return None, None
 
-    return merged_df
+    # Return both the dataframe and the mapping of config keys to final column names
+    return merged_df, final_column_names
 
-# --- Feature Engineering ---
-def engineer_features(df):
-    """Creates features for the HMM model."""
+# --- Feature Engineering (Simplified) ---
+def engineer_features(df, final_column_names, config_features):
+    """Creates features for the HMM model using known column names."""
     print("Engineering features...")
+    if df is None or df.empty:
+         print("Error: Cannot engineer features on empty DataFrame.")
+         return None
     df_feat = df.copy()
-    # Example features (adjust and add more based on data and strategy)
-    df_feat['price_return'] = df_feat['close'].pct_change().fillna(0)
-    df_feat['volatility'] = df_feat['price_return'].rolling(window=10).std().fillna(0) # Example: 10-period volatility
 
-    # Example using other loaded data (replace with actual column names)
-    # Check if columns exist before creating features
-    # if 'cryptoquant_funding_rate' in df_feat.columns:
-    #    df_feat['funding_rate_change'] = df_feat['cryptoquant_funding_rate'].diff().fillna(0)
-    # if 'glassnode_active_value' in df_feat.columns:
-    #    df_feat['active_addresses_change'] = df_feat['glassnode_active_value'].pct_change().fillna(0)
+	 # --- ADD THIS LINE ---
+    print(f"\nDEBUG: Columns in df_feat at start of engineer_features: {df_feat.columns.tolist()}\n")
+    # --- END OF ADDED LINE ---
 
-    # Drop initial rows with NaNs from rolling calculations etc.
-    df_feat.dropna(inplace=True)
+    # --- Calculate Price-Based Features ---
+    df_feat['price_return'] = df_feat['close'].pct_change()
+    df_feat['volatility'] = df_feat['price_return'].rolling(window=10).std()
+
+    # --- Add other derived features if desired ---
+    # Example: Use the final column name for funding rate if available
+    funding_col = final_column_names.get('cryptoquant_funding') # Get actual column name used
+    if funding_col and funding_col in df_feat.columns:
+         df_feat['funding_rate_change'] = df_feat[funding_col].diff()
+         # You might want this change INSTEAD of the raw rate in config features
+    else:
+         # Handle case where funding rate wasn't successfully loaded/named
+         if 'cryptoquant_funding_rate' in config_features: # Check if config expected it
+              print("Warning: Funding rate column expected but not found for feature engineering.")
+
+
+    active_col = final_column_names.get('glassnode_active') # Get actual column name used
+    if active_col and active_col in df_feat.columns:
+         df_feat['active_addresses_change'] = df_feat[active_col].pct_change()
+    else:
+         if 'glassnode_active_value' in config_features: # Check if config expected it
+              print("Warning: Active addresses column expected but not found for feature engineering.")
+
+
+    # --- Clean up NaNs introduced by NEW calculations ---
+    df_feat.fillna(method='ffill', inplace=True) # Fill NaNs from diff/pct_change/rolling
+    df_feat.fillna(0, inplace=True)             # Fill any remaining NaNs (e.g., at start)
+    # Consider removing initial rows if rolling/diff creates leading NaNs that aren't filled
+    # df_feat.dropna(inplace=True) # Alternative: drop rows with any NaNs
+
+
     print(f"Features engineered. Data shape: {df_feat.shape}")
+    print(f"Engineered columns available: {df_feat.columns.tolist()}")
+
+
+    # --- Final Check: Ensure features listed in config EXIST ---
+    missing_features = [f for f in config_features if f not in df_feat.columns]
+    if missing_features:
+        print(f"FATAL Error: Features listed in config are missing from DataFrame after engineering: {missing_features}")
+        print(f"Check config 'features' list and engineered columns above.")
+        return None # Stop execution if required features aren't there
+
     return df_feat
 
 # --- HMM Model ---
@@ -274,7 +349,6 @@ def calculate_performance(df_backtest, fee_percent):
 
     return results
 
-
 # --- Main Execution ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
@@ -283,74 +357,61 @@ if __name__ == "__main__":
 
     config = load_config(args.config)
 
-    run_mode = config.get('run_mode', 'backtest') # Default to backtest
+    run_mode = config.get('run_mode', 'backtest')
     print(f"\n--- Running in {run_mode.upper()} mode ---")
 
-    # 1. Load Data
-    df_raw = load_and_preprocess_data(config, mode=run_mode)
+    # 1. Load Data -> Now returns df_raw AND final_column_names map
+    df_raw, final_column_names = load_and_preprocess_data(config, mode=run_mode)
+
+	# --- ADD THIS LINE ---
+    if df_raw is not None: print(f"\nDEBUG: Columns in df_raw after loading: {df_raw.columns.tolist()}\n")
+    # --- END OF ADDED LINE ---
+
+    # Make sure final_column_names is a dict even if loading fails partially
+    if final_column_names is None: final_column_names = {}
 
     if df_raw is not None and not df_raw.empty:
-        # 2. Engineer Features
-        df_features = engineer_features(df_raw)
-        feature_list = config.get('features', [])
-        # Ensure all selected features exist
-        feature_list = [f for f in feature_list if f in df_features.columns]
+        # Get feature list from config
+        feature_list_from_config = config.get('features', [])
+        if not feature_list_from_config:
+             print("Error: 'features' list is empty in config.yaml")
+             exit()
+
+        # 2. Engineer Features -> Pass names map and config list
+        df_features = engineer_features(df_raw, final_column_names, feature_list_from_config)
+
+        # --- Check if df_features is valid before proceeding ---
+        if df_features is None or df_features.empty:
+             print("Error: Feature engineering failed or produced empty DataFrame. Exiting.")
+             exit()
+
+        # Use only the features specified in the config that actually exist now
+        feature_list = [f for f in feature_list_from_config if f in df_features.columns]
         if not feature_list:
-             print("Error: No valid features selected or generated. Check config and feature engineering.")
+             print("Error: None of the features specified in config exist after engineering. Exiting.")
              exit()
         print(f"Using features for HMM: {feature_list}")
 
-
+        # --- HMM Training and Backtesting (rest is the same) ---
         hmm_model = None
         if run_mode == 'backtest':
-            # 3. Train HMM (only in backtest mode)
             hmm_model = train_hmm(df_features, feature_list,
                                   config['hmm_states'],
                                   config['hmm_covariance_type'],
                                   config['hmm_iterations'])
-            # Optional: Save the trained model
-            # import joblib
-            # joblib.dump(hmm_model, 'hmm_model.pkl')
-
+            # Optional: Save model
         elif run_mode == 'forwardtest':
-             # In forward test mode, load the previously trained model
-             print("Forward test mode: Loading pre-trained HMM model...")
-             # import joblib
-             # try:
-             #    hmm_model = joblib.load('hmm_model.pkl')
-             #    print("Loaded HMM model from hmm_model.pkl")
-             # except FileNotFoundError:
-             #    print("Error: hmm_model.pkl not found. Train the model in backtest mode first.")
-             #    exit(1)
-             # except Exception as e:
-             #    print(f"Error loading HMM model: {e}")
-             #    exit(1)
-             # --- Placeholder: Need to implement saving/loading for forward test ---
-             print("Error: Model loading for forward testing is not fully implemented in this example.")
-             print("Please train in backtest mode first and add model saving/loading logic (e.g., using joblib).")
-             exit(1) # Exit until loading is implemented
-
+             # Implement model loading here
+             print("Error: Model loading for forward testing not implemented.")
+             exit(1)
 
         if hmm_model:
-            # 4. Predict States
             states = predict_states(hmm_model, df_features, feature_list)
-
             if states is not None:
-                # 5. Generate Signals
                 df_signals = generate_signals(df_features, states, config['signal_map'])
-
-                # 6. Run Backtest/Forward Test Simulation
                 df_results = run_backtest(df_signals, config['trading_fee_percent'])
-
-                # 7. Calculate Performance
                 performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
-
-                # Optional: Save results to CSV
-                # results_filename = f"strategy_results_{run_mode}.csv"
-                # results_path = os.path.join(config['data_directory'], results_filename)
-                # df_results.to_csv(results_path)
-                # print(f"Full results saved to {results_path}")
-
+                # Optional: Save results
             else:
                 print("Skipping strategy simulation due to state prediction error.")
         else:

@@ -61,7 +61,10 @@ features:
   - "price_return"            # How much the price changed
   - "volatility"              # How volatile the price was
   - "cryptoquant_funding_rate"
-  - "glassnode_active_value"
+  # - "glassnode_active_value"
+    # --- Using CHANGES instead of raw values ---
+  # - "funding_rate_change"      # Changed from cryptoquant_funding_rate
+  # - "active_addresses_change"  # Changed from glassnode_active_value
   - "cryptoquant_inflow_value"
   - "coinglass_oi_value"
 
@@ -75,18 +78,15 @@ trading_fee_percent: 0.0006 # 0.06%
 signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
   0: 0  # State 0 (High-vol choppy?) -> Hold
   1: 1  # State 1 (Low-vol up?) -> Buy
-  2: -1 # State 2 (Bearish/Downtrend?) -> Sell (Changed from 0)
+  2: 0  # State 2 (Bearish/Downtrend?) -> Hold (Changed back from -1)
   3: 1  # State 3 (Strong momentum up?) -> Buy (Changed from 0)
+  # 2: -1 # State 2 (Bearish/Downtrend?) -> Sell (Changed from 0)
 
 # signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
-#   0: 0 # State 0 (Calm/Low Conviction) -> Hold
-#   1: 1 # State 1 (High Vol/Momentum?, Best Avg Return) -> Buy
-#   2: -1 # State 2 (Low Vol/Distribution?, Worst Avg Return) -> Sell (Changed back from 0)
-
-# signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
-#   0: 0 # State 0 (Low-vol, sideways/slight down) -> Hold
-#   1: 1 # State 1 (Mod-vol, slight up) -> Buy
-#   2: 0 # State 2 (High-vol, high-activity, neutral return) -> Hold (Changed from -1)
+#   0: 0  # State 0 (Neutral/Sideways?) -> Hold
+#   1: 1  # State 1 (Low-Vol Up?) -> Buy
+#   2: 1  # State 2 (High-Vol Bull Burst?) -> Buy (Changed from 0)
+#   3: 0  # State 3 (High Inflow/Distribution?) -> Hold (Changed from 1)
 
 # Backtest/Forward Test Execution Settings
 run_mode: "backtest" # Options: "backtest", "forwardtest"
@@ -105,4 +105,12 @@ run_mode: "backtest" # Options: "backtest", "forwardtest"
 # Maximum Drawdown (%): -51.1727
 # Trade Frequency (%): 5.0228
 # Number of Trades: 55.0000
+# ---------------------------
+
+# --- Performance Summary ---
+# Total Return (%): 109.1120
+# Annualized Sharpe Ratio: 0.8237
+# Maximum Drawdown (%): -35.7398
+# Trade Frequency (%): 4.4749
+# Number of Trades: 49.0000
 # ---------------------------

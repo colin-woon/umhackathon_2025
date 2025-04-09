@@ -98,3 +98,11 @@ run_mode: "backtest" # Options: "backtest", "forwardtest"
 # Trade Frequency (%): 1.6438
 # Number of Trades: 18.0000
 # ---------------------------
+
+# --- Performance Summary ---
+# Total Return (%): 308.8723
+# Annualized Sharpe Ratio: 1.1167
+# Maximum Drawdown (%): -51.1727
+# Trade Frequency (%): 5.0228
+# Number of Trades: 55.0000
+# ---------------------------

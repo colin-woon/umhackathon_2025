@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import yaml
 import os
+import argparse
 from hmmlearn import hmm # Requires hmmlearn
 # from sklearn.preprocessing import StandardScaler # Optional: If scaling features
 # from sklearn.metrics import accuracy_score # Optional: If evaluating HMM directly

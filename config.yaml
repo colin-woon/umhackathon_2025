@@ -12,9 +12,9 @@ data_directory: "data"
 metrics_to_download:
   cryptoquant:
     - path: "btc/exchange-flows/inflow" # Just the path
-      params: { exchange: "binance", window: "day" } # Source-specific params
+      params: { exchange: "binance", window: "hour" } # Source-specific params
     - path: "btc/market-data/funding-rates"
-      params: { exchange: "binance", window: "day" } # Example
+      params: { exchange: "binance", window: "hour" } # Example
   glassnode:
     - path: "addresses/active_count"
       params: { a: "BTC", i: "24h" } # Example: Daily interval
@@ -22,16 +22,16 @@ metrics_to_download:
       params: { a: "BTC", i: "24h" } # Example: Daily interval
   coinglass:
     - path: "futures/openInterest/ohlc-history"
-      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1d" }
+      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
     - path: "futures/globalLongShortAccountRatio/history"
-      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1d" }
+      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
   candles: # Candle source uses a slightly different structure if needed, or can follow path/params
      # Option 1: Keep original topic string for candles if simpler? (Script needs adjustment)
      # - "bybit-linear|candle?symbol=BTCUSDT&interval=1h"
      # Option 2: Use path/params structure (Script needs adjustment to handle source correctly)
      - source_override: "bybit-linear" # Specify the source host part
        path: "candle"
-       params: { symbol: "BTCUSDT", interval: "1d"}
+       params: { symbol: "BTCUSDT", interval: "1h"}
 
 
 # Time periods for downloading data (Unix timestamp in milliseconds)
@@ -54,4 +54,26 @@ data_files:
   coinglass_oi: "coinglass_futures_openInterest_ohlc-history"
   coinglass_lsr: "coinglass_futures_longShortRate_history"
 
-# ... (rest of config: features, hmm_settings, etc.)
+# Features to use for HMM model training (column names after data loading/preprocessing)
+# Example - adjust based on actual columns and desired features
+features:
+  - "price_return"            # How much the price changed (already have)
+  - "volatility"              # How volatile the price was (already have)
+  # --- ADDED FEATURES ---
+  - "cryptoquant_funding_rate" # Add the funding rate value
+  - "glassnode_active_value"   # Add the active addresses value
+
+# HMM Settings
+hmm_states: 3 # Number of hidden states (e.g., 0=Bear/Consolidation, 1=Bull, 2=High Volatility)
+hmm_covariance_type: "diag" # Options: "spherical", "diag", "full", "tied"
+hmm_iterations: 100
+
+# Trading Strategy Settings
+trading_fee_percent: 0.0006 # 0.06%
+signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+  0: 0 # Example: State 0 -> Hold
+  1: 1 # Example: State 1 -> Buy
+  2: -1 # Example: State 2 -> Sell
+
+# Backtest/Forward Test Execution Settings
+run_mode: "backtest" # Options: "backtest", "forwardtest"

@@ -162,7 +162,7 @@ def engineer_features(df, final_column_names, config_features):
     df_feat = df.copy()
 
 	 # --- ADD THIS LINE ---
-    print(f"\nDEBUG: Columns in df_feat at start of engineer_features: {df_feat.columns.tolist()}\n")
+    # print(f"\nDEBUG: Columns in df_feat at start of engineer_features: {df_feat.columns.tolist()}\n")
     # --- END OF ADDED LINE ---
 
     # --- Calculate Price-Based Features ---
@@ -365,7 +365,7 @@ if __name__ == "__main__":
     df_raw, final_column_names = load_and_preprocess_data(config, mode=run_mode)
 
 	# --- ADD THIS LINE ---
-    if df_raw is not None: print(f"\nDEBUG: Columns in df_raw after loading: {df_raw.columns.tolist()}\n")
+    # if df_raw is not None: print(f"\nDEBUG: Columns in df_raw after loading: {df_raw.columns.tolist()}\n")
     # --- END OF ADDED LINE ---
 
     # Make sure final_column_names is a dict even if loading fails partially
@@ -385,6 +385,11 @@ if __name__ == "__main__":
         if df_features is None or df_features.empty:
              print("Error: Feature engineering failed or produced empty DataFrame. Exiting.")
              exit()
+
+ 		# --- ADD DEBUG LINES ---
+        print(f"\nDEBUG: Feature list from config: {feature_list_from_config}")
+        print(f"DEBUG: Columns available in df_features right before filtering: {df_features.columns.tolist()}\n")
+        # --- END DEBUG LINES ---
 
         # Use only the features specified in the config that actually exist now
         feature_list = [f for f in feature_list_from_config if f in df_features.columns]
@@ -470,6 +475,41 @@ if __name__ == "__main__":
         # 4. Predict States using SCALED data
         # Pass scaled data X_scaled directly
         states = predict_states(hmm_model, X_scaled) # Pass scaled data
+
+		# --- ADDED: Analyze HMM States ---
+        if states is not None and hmm_model is not None:
+            print("\n--- HMM State Analysis ---")
+            print(f"Features used for analysis: {feature_list}")
+            # Print the mean of the *scaled* features for each state
+            print("Mean of Scaled Features for each State:")
+            try:
+                for i in range(hmm_model.n_components): # n_components is the number of states
+                    print(f"  State {i}:")
+                    for feature_name, mean_val in zip(feature_list, hmm_model.means_[i]):
+                         print(f"    {feature_name}: {mean_val:.4f}")
+            except Exception as e:
+                print(f"  Could not print HMM means: {e}")
+
+            # You could add more analysis here later, e.g., calculate average raw price return per state
+            # Example: Add state column back to df_features if lengths match
+            if len(states) == len(df_features.index):
+                 df_features['state'] = states # Add state column temporarily for analysis
+                 print("\nAverage Raw Price Return per State:")
+                 try:
+                      # Ensure price_return exists before grouping
+                      if 'price_return' in df_features.columns:
+                            print(df_features.groupby('state')['price_return'].mean())
+                      else:
+                            print("  'price_return' column not found for state analysis.")
+                 except Exception as e:
+                      print(f"  Could not calculate average return per state: {e}")
+                 # Remove state column if added only for analysis to avoid issues later if length mismatches occurred
+                 # Or handle alignment more robustly before generate_signals
+                 # For now, we'll leave it assuming lengths match based on previous check
+            else:
+                 print("  Skipping average return per state due to length mismatch.")
+            print("--------------------------\n")
+        # --- End of Added Block ---
 
         if states is not None:
             # Ensure 'states' aligns with the original df_features index for signal generation

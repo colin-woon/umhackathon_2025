@@ -37,37 +37,30 @@ def make_safe_filename(source, path, suffix):
     safe_path = re.sub(r'_+', '_', safe_path).strip('_')
     return f"{source}_{safe_path}{suffix}.csv"
 
-# --- Re-Corrected API Interaction Function ---
-def fetch_data_from_api(api_key, base_url, source, path, source_params, start_time_ms, end_time_ms, page_limit=1000): # page_limit is now unused when start/end are primary
-    """Fetches data using start_time and end_time, strictly adhering to API parameter combination rules."""
+# --- Re-Re-Corrected API Interaction Function ---
+def fetch_data_from_api(api_key, base_url, source, path, source_params, start_time_ms, end_time_ms, page_limit=1000):
+    """Fetches data using start_time and limit, stopping based on end_time, with robust post-processing."""
     headers = {"X-API-KEY": api_key}
     endpoint_url = f"{base_url}/{source}/{path}"
 
-    # Base query params only include source-specific ones now
     base_query_params = {}
     if source_params:
         base_query_params.update(source_params)
 
-    print(f"Fetching: {source}/{path} with params {source_params} from {datetime.fromtimestamp(start_time_ms/1000)} to {datetime.fromtimestamp(end_time_ms/1000)}...")
+    print(f"Fetching: {source}/{path} with params {source_params} starting from {datetime.fromtimestamp(start_time_ms/1000)} until approx {datetime.fromtimestamp(end_time_ms/1000)}...")
 
     all_data = []
     current_start_time = start_time_ms
 
     while current_start_time < end_time_ms:
-        # --- FIX #2: Create query params for page request using ONLY start_time, end_time, and source_params ---
-        page_query_params = base_query_params.copy() # Start with source-specific params
-        page_query_params["start_time"] = current_start_time # Update start time for pagination
-        page_query_params["end_time"] = end_time_ms   # Keep original end time
+        page_query_params = base_query_params.copy()
+        page_query_params["start_time"] = current_start_time
+        page_query_params["limit"] = min(page_limit, 100000) # Always include limit
 
-        # --- REMOVED THE LINE ADDING 'limit' HERE ---
-        # page_query_params["limit"] = min(page_limit, 100000) # REMOVED!
-
-        # Display the URL being requested (now without the explicit limit)
         request_url_display = endpoint_url + "?" + urlencode(page_query_params)
         print(f"  Paging Request URL (approx): {request_url_display}")
 
         try:
-            # Pass the corrected params (start_time, end_time, source_params only)
             response = requests.get(endpoint_url, headers=headers, params=page_query_params)
             response.raise_for_status()
             data = response.json()
@@ -77,54 +70,104 @@ def fetch_data_from_api(api_key, base_url, source, path, source_params, start_ti
                 break
 
             page_data = data.get('data', [])
+            # Filter page data immediately to prevent adding out-of-range data
+            page_data = [d for d in page_data if 'start_time' in d and d['start_time'] < end_time_ms]
+
+            if not page_data: # Check if filtering removed all data
+                print(f"  All data on page was >= end_time or invalid. Stopping fetch.")
+                break
+
             all_data.extend(page_data)
-            last_record_time_ms = page_data[-1].get('start_time') if page_data and 'start_time' in page_data[-1] else None
+            last_record_time_ms = page_data[-1].get('start_time')
 
             print(f"  Fetched {len(page_data)} records ending approx {datetime.fromtimestamp(last_record_time_ms/1000) if last_record_time_ms else 'N/A'}")
 
-            if not page_data or last_record_time_ms is None:
-                 print("  Stopping pagination due to empty page or missing timestamp.")
+            if last_record_time_ms is None:
+                 print("  Stopping pagination due to missing timestamp in last record.")
                  break
 
-            # --- Pagination Logic Check ---
-            # If the API returns data right up to end_time without needing a limit,
-            # the last record might be >= end_time, or the loop condition will handle it.
-            # If the API *does* have an internal page size limit even when 'limit' is not sent,
-            # this loop *should* still work by advancing start_time.
-            # We might need to add a check if len(page_data) == 0 or if last_record_time stops advancing.
+            # Check if the API returned fewer records than the limit asked for.
+            if len(page_data) < page_query_params["limit"]:
+                 print("  Received fewer records than limit, assuming end of available data for this range.")
+                 # No need to break here explicitly, the outer loop condition current_start_time < end_time_ms handles it.
 
             # Advance start time for the next iteration
             current_start_time = last_record_time_ms + 1
 
             time.sleep(0.2) # Rate Limiting
 
+        # --- Error Handling Block (Keep as before) ---
         except requests.exceptions.RequestException as e:
             print(f"  Error fetching {source}/{path}: {e}")
             if e.response is not None:
                 print(f"  Response Status Code: {e.response.status_code}")
                 try:
-                    # Try printing error again - crucial for seeing if it changes
                     print(f"  Response Body: {e.response.json()}")
                 except requests.exceptions.JSONDecodeError:
                     print(f"  Response Body (non-JSON): {e.response.text}")
-            break # Exit loop on error
+            all_data = []
+            print(f"  Discarding potentially partial data for {source}/{path} due to error.")
+            break
         except Exception as e:
-            print(f"  An unexpected error occurred: {e}")
-            break # Exit loop on other errors
+            print(f"  An unexpected error occurred during pagination: {e}")
+            all_data = []
+            print(f"  Discarding potentially partial data for {source}/{path} due to error.")
+            break
+    # --- End of While Loop ---
 
-    if not all_data:
-      print(f"  Warning: No data fetched overall for {source}/{path}")
-      return None
+    # --- Post-Processing and Filtering ---
+    if not all_data: # Check if any data was successfully collected
+         print(f"  Warning: No data collected in loop for {source}/{path}")
+         return None
 
-    df = pd.DataFrame(all_data)
-    if 'start_time' in df.columns:
+    try:
+        df = pd.DataFrame(all_data)
+        if 'start_time' not in df.columns:
+             print(f"  Error: 'start_time' column missing after collecting data for {source}/{path}.")
+             return None
+        if df.empty:
+             print(f"  Warning: DataFrame is empty after creation for {source}/{path}")
+             return None
+
+        # Convert to datetime and set index
         df['timestamp'] = pd.to_datetime(df['start_time'], unit='ms')
-        df = df.loc[~df.index.duplicated(keep='first')]
-        df = df.set_index('timestamp').sort_index()
-    else:
-        print(f"  Warning: 'start_time' column not found for {source}/{path}. Cannot set time index.")
+        df = df.set_index('timestamp')
 
-    return df
+        # Remove duplicates based on index (important after pagination)
+        df = df.loc[~df.index.duplicated(keep='first')]
+
+        # Sort index
+        df = df.sort_index()
+
+        # Check index type BEFORE final filtering
+        if not isinstance(df.index, pd.DatetimeIndex):
+            print(f"  Error: Index is not DatetimeIndex after processing for {source}/{path}. Index type: {type(df.index)}")
+            return None
+
+        # ---- Perform Final Time Range Filtering ----
+        # Ensure start/end times are Timestamps for comparison
+        start_ts = pd.to_datetime(start_time_ms, unit='ms')
+        end_ts = pd.to_datetime(end_time_ms, unit='ms')
+
+        # Apply the filter - This is where the TypeError previously occurred
+        df_filtered = df[(df.index >= start_ts) & (df.index < end_ts)]
+
+        # Check if dataframe is empty after filtering
+        if df_filtered.empty:
+            print(f"  Warning: DataFrame is empty after final filtering for time range for {source}/{path}")
+            return None
+
+        print(f"  Successfully processed {len(df_filtered)} records for {source}/{path}")
+        return df_filtered
+
+    except TypeError as te:
+        # Catch the specific TypeError if it still happens
+        print(f"  TypeError during post-processing/filtering for {source}/{path}: {te}")
+        print(f"  DataFrame info before error:\n{df.info() if 'df' in locals() else 'N/A'}")
+        return None
+    except Exception as e:
+        print(f"  Unexpected error during post-processing for {source}/{path}: {e}")
+        return None
 
 # --- Main Execution ---
 if __name__ == "__main__":

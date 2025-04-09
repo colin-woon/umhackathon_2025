@@ -10,37 +10,37 @@ data_directory: "data"
 # Structure: {source: [ {path: "endpoint_path", params: {key: value, ...}}, ... ]}
 # VERIFY paths and parameter values (exchange, window, i, a, symbol, interval) against cybotrade.rs docs!
 metrics_to_download:
-  cryptoquant:
-    - path: "btc/exchange-flows/inflow" # Just the path
-      params: { exchange: "binance", window: "day" } # Source-specific params
-    - path: "btc/market-data/funding-rates"
-      params: { exchange: "binance", window: "hour" } # Example
-  glassnode:
-    - path: "addresses/active_count"
-      params: { a: "BTC", i: "24h" } # Example: Daily interval
-    - path: "transactions/count"
-      params: { a: "BTC", i: "24h" } # Example: Daily interval
+  # cryptoquant:
+  #   - path: "btc/exchange-flows/inflow" # Just the path
+  #     params: { exchange: "binance", window: "day" } # Source-specific params
+  #   - path: "btc/market-data/funding-rates"
+  #     params: { exchange: "binance", window: "day" } # Example
+  # glassnode:
+  #   - path: "addresses/active_count"
+  #     params: { a: "BTC", i: "24h" } # Example: Daily interval
+  #   - path: "transactions/count"
+  #     params: { a: "BTC", i: "24h" } # Example: Daily interval
   coinglass:
     - path: "futures/openInterest/ohlc-history"
       params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
     - path: "futures/longShortRate/history"
       params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
-  candles: # Candle source uses a slightly different structure if needed, or can follow path/params
-     # Option 1: Keep original topic string for candles if simpler? (Script needs adjustment)
-     # - "bybit-linear|candle?symbol=BTCUSDT&interval=1h"
-     # Option 2: Use path/params structure (Script needs adjustment to handle source correctly)
-     - source_override: "bybit-linear" # Specify the source host part
-       path: "candle"
-       params: { symbol: "BTCUSDT", interval: "1h"}
+  # candles: # Candle source uses a slightly different structure if needed, or can follow path/params
+  #    # Option 1: Keep original topic string for candles if simpler? (Script needs adjustment)
+  #    # - "bybit-linear|candle?symbol=BTCUSDT&interval=1h"
+  #    # Option 2: Use path/params structure (Script needs adjustment to handle source correctly)
+  #    - source_override: "bybit-linear" # Specify the source host part
+  #      path: "candle"
+  #      params: { symbol: "BTCUSDT", interval: "1d"}
 
 
 # Time periods for downloading data (Unix timestamp in milliseconds)
-# Backtest Period (e.g., 1 week for testing)
-backtest_start_time_ms: 1609459200000 # Jan 1 2021
-backtest_end_time_ms: 1610064000000   # Jan 8 2021 (Adjust to longer period after testing)
-# Forward Test Period (e.g., 1 week for testing)
-forwardtest_start_time_ms: 1704067200000 # Jan 1 2024
-forwardtest_end_time_ms: 1704672000000   # Jan 8 2024 (Adjust to longer period after testing)
+# Backtest Period (3 years)
+backtest_start_time_ms: 1609459200000     # Jan 1 2021
+backtest_end_time_ms: 1704067199000       # Dec 31 2023
+# Forward Test Period (3 years)
+forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
+forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
 
 # --- ML Model & Strategy Settings (Used by main_strategy.py) ---
 # ... (rest of the config remains the same, but update data_files based on new naming) ...

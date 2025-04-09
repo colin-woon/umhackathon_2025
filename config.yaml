@@ -1,0 +1,72 @@
+# Configuration for ML Trading Strategy
+
+# --- Data Settings ---
+data_directory: "data" # Folder to store downloaded data / read data from
+
+# --- Data Download Settings (Used by download_data.py) ---
+# API key is read from environment variable CYBOTRADE_API_KEY
+
+# Define metrics and candles to download {source: [list_of_endpoints_or_topics]}
+# Refer to cybotrade.rs documentation for specific endpoints/topics
+metrics_to_download:
+  # Example: cryptoquant|btc/exchange-flows/inflow?exchange=okx&window=hour
+  cryptoquant:
+    - "btc/exchange-flows/inflow?exchange=binance&window=day&from=20191001&limit=2"
+    # - "btc/exchange-flows/inflow?exchange=binance&window=day"
+    # - "btc/market-data/funding-rates?exchange=binance&window=day"
+  # # Example: glassnode|market/deltacap_usd?a=BTC&i=10m
+  # glassnode:
+  #   - "addresses/active_count?a=BTC&i=24h"
+  #   - "transactions/count?a=BTC&i=24h"
+  # # Example: coinglass|futures/openInterest/ohlc-history?exchange=Binance&symbol=BTCUSDT&interval=1m
+  # coinglass:
+  #   - "futures/openInterest/ohlc-history?exchange=Binance&symbol=BTCUSDT&interval=1d"
+  #   - "futures/longShortRate/history?exchange=Binance&symbol=BTCUSDT&interval=1d"
+  # # Example: bybit-linear|candle?symbol=BTCUSDT&interval=1h
+  # candles:
+  #   - "bybit-linear|candle?symbol=BTCUSDT&interval=1d" # Main price data
+
+# Time periods for downloading data (Unix timestamp in milliseconds)
+# Example: Use https://www.epochconverter.com/
+# Backtest Period (e.g., 3 years: Jan 1 2021 to Dec 31 2023)
+backtest_start_time_ms: 1609459200000
+backtest_end_time_ms: 1703980800000
+# Forward Test Period (e.g., 1 year: Jan 1 2024 to Dec 31 2024)
+forwardtest_start_time_ms: 1704067200000
+forwardtest_end_time_ms: 1735603200000 # Adjust as needed
+
+# --- ML Model & Strategy Settings (Used by main_strategy.py) ---
+# Files to load for analysis (adjust filenames based on downloader output)
+# These should correspond to the metrics downloaded
+data_files:
+  candles: "candles_bybit-linear_candle_symbol_BTCUSDT_interval_1d" # Base filename pattern
+  cryptoquant_inflow: "cryptoquant_btc_exchange-flows_inflow_exchange_all_exchange_window_1d"
+  cryptoquant_funding: "cryptoquant_btc_market-data_funding-rates_exchange_all_exchange_window_1d"
+  glassnode_active: "glassnode_addresses_active_count_a_BTC_i_1d"
+  glassnode_tx: "glassnode_transactions_count_a_BTC_i_1d"
+  coinglass_oi: "coinglass_futures_openInterest_ohlc-history_exchange_Binance_symbol_BTCUSDT_interval_1d"
+  coinglass_lsr: "coinglass_futures_longShortRate_history_exchange_Binance_symbol_BTCUSDT_interval_1d"
+
+# Features to use for HMM model training (column names after data loading/preprocessing)
+# Example - adjust based on actual columns and desired features
+features:
+  - "price_return"
+  - "volatility"
+  # Add other engineered features based on loaded data here
+  # e.g., - "funding_rate_change"
+  #      - "active_addresses_change"
+
+# HMM Settings
+hmm_states: 3 # Number of hidden states (e.g., 0=Bear/Consolidation, 1=Bull, 2=High Volatility)
+hmm_covariance_type: "diag" # Options: "spherical", "diag", "full", "tied"
+hmm_iterations: 100
+
+# Trading Strategy Settings
+trading_fee_percent: 0.0006 # 0.06%
+signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+  0: 0 # Example: State 0 -> Hold
+  1: 1 # Example: State 1 -> Buy
+  2: -1 # Example: State 2 -> Sell
+
+# Backtest/Forward Test Execution Settings
+run_mode: "backtest" # Options: "backtest", "forwardtest"

@@ -72,19 +72,21 @@ hmm_iterations: 1000
 
 # Trading Strategy Settings
 trading_fee_percent: 0.0006 # 0.06%
-# signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
-#   0: -1 # State 0 -> Sell (Hypothesis: Bearish/Risk-Off)
-#   1: 1  # State 1 -> Buy (Hypothesis: Bullish/Risk-On)
+signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+  0: 0  # State 0 (High-vol choppy?) -> Hold
+  1: 1  # State 1 (Low-vol up?) -> Buy
+  2: -1 # State 2 (Bearish/Downtrend?) -> Sell (Changed from 0)
+  3: 1  # State 3 (Strong momentum up?) -> Buy (Changed from 0)
 
 # signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
 #   0: 0 # State 0 (Calm/Low Conviction) -> Hold
 #   1: 1 # State 1 (High Vol/Momentum?, Best Avg Return) -> Buy
 #   2: -1 # State 2 (Low Vol/Distribution?, Worst Avg Return) -> Sell (Changed back from 0)
 
-signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
-  0: 0 # State 0 (Low-vol, sideways/slight down) -> Hold
-  1: 1 # State 1 (Mod-vol, slight up) -> Buy
-  2: 0 # State 2 (High-vol, high-activity, neutral return) -> Hold (Changed from -1)
+# signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+#   0: 0 # State 0 (Low-vol, sideways/slight down) -> Hold
+#   1: 1 # State 1 (Mod-vol, slight up) -> Buy
+#   2: 0 # State 2 (High-vol, high-activity, neutral return) -> Hold (Changed from -1)
 
 # Backtest/Forward Test Execution Settings
 run_mode: "backtest" # Options: "backtest", "forwardtest"

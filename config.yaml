@@ -11,27 +11,25 @@ data_directory: "data"
 # VERIFY paths and parameter values (exchange, window, i, a, symbol, interval) against cybotrade.rs docs!
 metrics_to_download:
   cryptoquant:
-    - path: "btc/exchange-flows/inflow" # Just the path
-      params: { exchange: "binance", window: "hour" } # Source-specific params
+    - path: "btc/exchange-flows/inflow"
+      params: { exchange: "binance", window: "day" }
     - path: "btc/market-data/funding-rates"
-      params: { exchange: "binance", window: "hour" } # Example
+      params: { exchange: "binance", window: "day" }
   glassnode:
     - path: "addresses/active_count"
-      params: { a: "BTC", i: "24h" } # Example: Daily interval
+      params: { a: "BTC", i: "24h" }
     - path: "transactions/count"
-      params: { a: "BTC", i: "24h" } # Example: Daily interval
+      params: { a: "BTC", i: "24h" }
   coinglass:
     - path: "futures/openInterest/ohlc-history"
-      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
+      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1d" }
     - path: "futures/globalLongShortAccountRatio/history"
-      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
-  candles: # Candle source uses a slightly different structure if needed, or can follow path/params
-     # Option 1: Keep original topic string for candles if simpler? (Script needs adjustment)
-     # - "bybit-linear|candle?symbol=BTCUSDT&interval=1h"
-     # Option 2: Use path/params structure (Script needs adjustment to handle source correctly)
-     - source_override: "bybit-linear" # Specify the source host part
+      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1d" }
+  # Candle source uses a slightly different structure if needed, or can follow path/params
+  candles:
+     - source_override: "bybit-linear"
        path: "candle"
-       params: { symbol: "BTCUSDT", interval: "1h"}
+       params: { symbol: "BTCUSDT", interval: "1d"}
 
 
 # Time periods for downloading data (Unix timestamp in milliseconds)
@@ -46,7 +44,7 @@ forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
 # ... (rest of the config remains the same, but update data_files based on new naming) ...
 # Example: Update data_files based on path/params structure
 data_files:
-  candles: "bybit-linear_candle" # Simpler name now
+  candles: "bybit-linear_candle"
   cryptoquant_inflow: "cryptoquant_btc_exchange-flows_inflow"
   cryptoquant_funding: "cryptoquant_btc_market-data_funding-rates"
   glassnode_active: "glassnode_addresses_active_count"
@@ -58,38 +56,37 @@ data_files:
 # Example - adjust based on actual columns and desired features
 # Features to use for HMM model training (column names after data loading/preprocessing)
 features:
-  - "price_return"            # How much the price changed
-  - "volatility"              # How volatile the price was
+  - "price_return"
+  - "volatility"
   - "cryptoquant_funding_rate"
-  # - "glassnode_active_value"
-    # --- Using CHANGES instead of raw values ---
-  # - "funding_rate_change"      # Changed from cryptoquant_funding_rate
-  # - "active_addresses_change"  # Changed from glassnode_active_value
+  - "glassnode_active_value"
+  - "funding_rate_change"
+  - "active_addresses_change"
   - "cryptoquant_inflow_value"
   - "coinglass_oi_value"
 
 # HMM Settings
-hmm_states: 4 # Number of hidden states (e.g., 0=Bear/Consolidation, 1=Bull, 2=High Volatility)
-hmm_covariance_type: "diag" # Options: "spherical", "diag", "full", "tied"
+# Number of hidden states (e.g., 0=Bear/Consolidation, 1=Bull, 2=High Volatility)
+hmm_states: 4
+# Options: "spherical", "diag", "full", "tied"
+hmm_covariance_type: "diag"
 hmm_iterations: 1000
 
 # Trading Strategy Settings
-trading_fee_percent: 0.0006 # 0.06%
-signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+trading_fee_percent: 0.0006
+
+# Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+signal_map:
   0: 0  # State 0 (High-vol choppy?) -> Hold
   1: 1  # State 1 (Low-vol up?) -> Buy
   2: 0  # State 2 (Bearish/Downtrend?) -> Hold (Changed back from -1)
   3: 1  # State 3 (Strong momentum up?) -> Buy (Changed from 0)
   # 2: -1 # State 2 (Bearish/Downtrend?) -> Sell (Changed from 0)
 
-# signal_map: # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
-#   0: 0  # State 0 (Neutral/Sideways?) -> Hold
-#   1: 1  # State 1 (Low-Vol Up?) -> Buy
-#   2: 1  # State 2 (High-Vol Bull Burst?) -> Buy (Changed from 0)
-#   3: 0  # State 3 (High Inflow/Distribution?) -> Hold (Changed from 1)
-
 # Backtest/Forward Test Execution Settings
-run_mode: "backtest" # Options: "backtest", "forwardtest"
+# Options: "backtest", "forwardtest"
+run_mode: "backtest"
+# run_mode: "forwardtest"
 
 # --- Performance Summary ---
 # Total Return (%): 97.8440

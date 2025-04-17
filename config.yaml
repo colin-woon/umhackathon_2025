@@ -33,12 +33,19 @@ metrics_to_download:
 
 
 # Time periods for downloading data (Unix timestamp in milliseconds)
-# Backtest Period (3 years)
+# # Backtest Period
+# backtest_start_time_ms: 1609459200000     # Jan 1 2021
+# backtest_end_time_ms: 1704067199000       # Dec 31 2023
+# # Forward Test Period
+# forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
+# forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
+
+# Backtest Period
 backtest_start_time_ms: 1609459200000     # Jan 1 2021
-backtest_end_time_ms: 1704067199000       # Dec 31 2023
-# Forward Test Period (3 years)
-forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
-forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
+backtest_end_time_ms: 1672531199000       # Dec 31 2022
+# Forward Test Period
+forwardtest_start_time_ms: 1672531200000  # Jan 1 2023
+forwardtest_end_time_ms: 1735689599000    # Dec 31 2024
 
 # --- ML Model & Strategy Settings (Used by main_strategy.py) ---
 # ... (rest of the config remains the same, but update data_files based on new naming) ...
@@ -59,15 +66,15 @@ features:
   - "price_return"
   - "volatility"
   - "cryptoquant_funding_rate"
-  - "glassnode_active_value"
-  - "funding_rate_change"
-  - "active_addresses_change"
+  # - "glassnode_active_value"
+  # - "funding_rate_change"
+  # - "active_addresses_change"
   - "cryptoquant_inflow_value"
   - "coinglass_oi_value"
 
 # HMM Settings
-# Number of hidden states (e.g., 0=Bear/Consolidation, 1=Bull, 2=High Volatility)
-hmm_states: 4
+min_hmm_states: 2
+max_hmm_states: 5
 # Options: "spherical", "diag", "full", "tied"
 hmm_covariance_type: "diag"
 hmm_iterations: 1000
@@ -77,11 +84,11 @@ trading_fee_percent: 0.0006
 
 # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
 signal_map:
-  0: 0  # State 0 (High-vol choppy?) -> Hold
-  1: 1  # State 1 (Low-vol up?) -> Buy
-  2: 0  # State 2 (Bearish/Downtrend?) -> Hold (Changed back from -1)
-  3: 1  # State 3 (Strong momentum up?) -> Buy (Changed from 0)
-  # 2: -1 # State 2 (Bearish/Downtrend?) -> Sell (Changed from 0)
+  0: 1 # State 0 (Neg raw return) -> Sell
+  1: -1  # State 1 (Highest raw return) -> Buy
+  2: 1  # State 2 (2nd highest raw return) -> Buy
+  3: 0  # State 3 (Positive raw return, low vol?) -> Buy
+  # 4: 1  # State 4 (Mixed signals, high vol) -> Hold
 
 # Backtest/Forward Test Execution Settings
 # Options: "backtest", "forwardtest"

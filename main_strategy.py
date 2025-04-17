@@ -350,7 +350,75 @@ def calculate_performance(df_backtest, fee_percent):
 
     return results
 
-# --- Main Execution ---
+# --- Function to Find Best HMM based on AIC/BIC ---
+def find_best_hmm_model(X_scaled, config, feature_list):
+    """
+    Loops through HMM states, trains models, and selects the best based on BIC/AIC.
+
+    Args:
+        X_scaled (np.ndarray): The scaled feature data for training.
+        config (dict): The configuration dictionary.
+        feature_list (list): List of feature names used (for context in logs).
+
+    Returns:
+        tuple: (best_hmm_model, best_n_states, best_bic, best_aic)
+               Returns (None, -1, np.inf, np.inf) if no model converges.
+    """
+    best_n_states = -1
+    best_bic = np.inf
+    best_aic = np.inf
+    best_hmm_model = None
+
+    # Get parameters from config
+    hmm_iterations = config['hmm_iterations']
+    covariance_type = config['hmm_covariance_type']
+    min_states = config['min_hmm_states']
+    max_states = config['max_hmm_states']
+
+    print(f"\n--- Searching for best n_states ({min_states} to {max_states}) using BIC/AIC ---")
+    print(f"Features being used: {feature_list}")
+
+    for n_states_test in range(min_states, max_states + 1):
+        print(f"\nTesting HMM with {n_states_test} states...")
+        # Train HMM directly on scaled data
+        current_hmm_model = train_hmm(X_scaled,
+                                      n_states_test,
+                                      covariance_type,
+                                      hmm_iterations) # Pass existing train_hmm function
+
+        if current_hmm_model:
+            # Check for convergence explicitly if train_hmm doesn't guarantee it
+            if hasattr(current_hmm_model, 'monitor_') and not current_hmm_model.monitor_.converged:
+                 print(f"  HMM n_states={n_states_test} did not converge. Skipping.")
+                 continue # Skip BIC/AIC if not converged
+
+            try:
+                current_bic = current_hmm_model.bic(X_scaled)
+                current_aic = current_hmm_model.aic(X_scaled)
+                print(f"  n_states={n_states_test} -> BIC: {current_bic:.2f}, AIC: {current_aic:.2f}")
+
+                # Check if this model is better (lower BIC is primary criteria)
+                if current_bic < best_bic:
+                    best_bic = current_bic
+                    best_aic = current_aic
+                    best_n_states = n_states_test
+                    best_hmm_model = current_hmm_model
+                    print(f"  *** New best model found with n_states={best_n_states} (BIC: {best_bic:.2f}) ***")
+                elif current_bic == best_bic and current_aic < best_aic: # Tie-break with AIC
+                    best_aic = current_aic
+                    best_n_states = n_states_test
+                    best_hmm_model = current_hmm_model
+                    print(f"  *** New best model found with n_states={best_n_states} (AIC tie-breaker: {best_aic:.2f}) ***")
+
+            except Exception as e:
+                print(f"  Error calculating BIC/AIC for n_states={n_states_test}: {e}")
+        else:
+             print(f"  HMM training failed for n_states={n_states_test}. Skipping.")
+
+    # --- End of Loop ---
+    return best_hmm_model, best_n_states, best_bic, best_aic
+
+# --- Main Execution (Refactored) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
     parser.add_argument('--config', type=str, default='config.yaml', help='Path to the configuration file.')
@@ -361,194 +429,156 @@ if __name__ == "__main__":
     run_mode = config.get('run_mode', 'backtest')
     print(f"\n--- Running in {run_mode.upper()} mode ---")
 
-    # 1. Load Data -> Now returns df_raw AND final_column_names map
+    # 1. Load Data
     df_raw, final_column_names = load_and_preprocess_data(config, mode=run_mode)
-
-	# --- ADD THIS LINE ---
-    # if df_raw is not None: print(f"\nDEBUG: Columns in df_raw after loading: {df_raw.columns.tolist()}\n")
-    # --- END OF ADDED LINE ---
-
-    # Make sure final_column_names is a dict even if loading fails partially
     if final_column_names is None: final_column_names = {}
 
     if df_raw is not None and not df_raw.empty:
         # Get feature list from config
         feature_list_from_config = config.get('features', [])
-        if not feature_list_from_config:
-             print("Error: 'features' list is empty in config.yaml")
-             exit()
+        if not feature_list_from_config: exit("Error: 'features' list empty.")
 
-        # 2. Engineer Features -> Pass names map and config list
+        # 2. Engineer Features
         df_features = engineer_features(df_raw, final_column_names, feature_list_from_config)
+        if df_features is None or df_features.empty: exit("Error: Feature engineering failed.")
 
-        # --- Check if df_features is valid before proceeding ---
-        if df_features is None or df_features.empty:
-             print("Error: Feature engineering failed or produced empty DataFrame. Exiting.")
-             exit()
-
- 		# --- ADD DEBUG LINES ---
-        print(f"\nDEBUG: Feature list from config: {feature_list_from_config}")
-        print(f"DEBUG: Columns available in df_features right before filtering: {df_features.columns.tolist()}\n")
-        # --- END DEBUG LINES ---
-
-        # Use only the features specified in the config that actually exist now
+        # Filter to features actually available
         feature_list = [f for f in feature_list_from_config if f in df_features.columns]
-        if not feature_list:
-             print("Error: None of the features specified in config exist after engineering. Exiting.")
-             exit()
-        print(f"Using features for HMM: {feature_list}")
+        if not feature_list: exit("Error: None of config features exist after engineering.")
+        print(f"\nUsing features: {feature_list}")
 
-       # --- HMM Training and Backtesting (NEW VERSION with Scaling) ---
-    hmm_model = None
-    scaler = None
-    X_scaled = None # To store the scaled features
+        # --- Prepare Data (Scaling depends on mode) ---
+        X_scaled = None
+        scaler = None
+        hmm_model = None
+        best_n_states = -1 # Keep track of the number of states used
 
-    if run_mode == 'backtest':
-        # --- Prepare data for scaling ---
-        X_train = df_features[feature_list].values
-        if np.any(np.isnan(X_train)) or np.any(np.isinf(X_train)):
-             print("Warning: NaNs or Infs found in feature data before scaling. Replacing with 0.")
-             X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+        if run_mode == 'backtest':
+            # --- Scale Data ---
+            X_train = df_features[feature_list].values
+            if np.any(np.isnan(X_train)) or np.any(np.isinf(X_train)):
+                 X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+            if len(X_train) == 0: exit("Error: No data for scaling.")
 
-        if len(X_train) == 0:
-             print("Error: No data available for scaling/HMM training.")
-             exit()
+            print("\nFitting scaler and scaling features...")
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X_train)
+            print("Features scaled.")
 
-        # --- Fit and transform scaler ---
-        print("Fitting scaler and scaling features...")
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X_train)
-        print("Features scaled.")
+            # --- Find Best HMM Model using the new function ---
+            hmm_model, best_n_states, best_bic, best_aic = find_best_hmm_model(X_scaled, config, feature_list)
 
-        # --- Train HMM on SCALED data ---
-        # Pass scaled data X_scaled directly, instead of df and feature list
-        hmm_model = train_hmm(X_scaled, # Pass scaled data
-                              config['hmm_states'],
-                              config['hmm_covariance_type'],
-                              config['hmm_iterations'])
+            if hmm_model is None:
+                exit("Error: Failed to find a suitable HMM model.")
 
-        # Optional: Save the trained model and scaler
-        if hmm_model and scaler:
-             try:
-                  # NOTE: Create a 'models' directory or adjust path
-                  os.makedirs('models', exist_ok=True)
-                  joblib.dump(hmm_model, 'models/hmm_model.pkl')
-                  joblib.dump(scaler, 'models/scaler.pkl')
-                  print("Saved trained HMM model and scaler to 'models/' directory.")
-             except Exception as e:
-                  print(f"Warning: Could not save model/scaler: {e}")
+            print(f"\n--- Proceeding with selected model: n_states = {best_n_states} ---")
 
-
-    elif run_mode == 'forwardtest':
-         # In forward test mode, load the previously trained model AND scaler
-         print("Forward test mode: Loading pre-trained HMM model and scaler...")
-         try:
-              # NOTE: Ensure 'models' directory exists and files are present
-              hmm_model = joblib.load('models/hmm_model.pkl')
-              scaler = joblib.load('models/scaler.pkl')
-              print("Loaded HMM model and scaler from 'models/' directory.")
-
-              # --- Prepare and scale forward test data ---
-              X_forward = df_features[feature_list].values # Use df_features from forward data load
-              if np.any(np.isnan(X_forward)) or np.any(np.isinf(X_forward)):
-                   print("Warning: NaNs or Infs found in forward test feature data before scaling. Replacing with 0.")
-                   X_forward = np.nan_to_num(X_forward, nan=0.0, posinf=0.0, neginf=0.0)
-
-              if len(X_forward) > 0:
-                   print("Scaling forward test features using loaded scaler...")
-                   X_scaled = scaler.transform(X_forward) # Use transform() ONLY, no fit()!
-                   print("Forward test features scaled.")
-              else:
-                   print("Error: No data available for forward test prediction.")
-                   exit()
-
-         except FileNotFoundError:
-              print("Error: hmm_model.pkl or scaler.pkl not found in 'models/'. Train the model in backtest mode first.")
-              exit(1)
-         except Exception as e:
-              print(f"Error loading HMM model or scaler: {e}")
-              exit(1)
-
-
-    # --- Prediction and Backtesting ---
-    if hmm_model and X_scaled is not None and len(X_scaled) > 0:
-        # 4. Predict States using SCALED data
-        # Pass scaled data X_scaled directly
-        states = predict_states(hmm_model, X_scaled) # Pass scaled data
-
-		# --- ADDED: Analyze HMM States ---
-        if states is not None and hmm_model is not None:
-            print("\n--- HMM State Analysis ---")
-            print(f"Features used for analysis: {feature_list}")
-            # Print the mean of the *scaled* features for each state
-            print("Mean of Scaled Features for each State:")
+            # --- Save Scaler & Best Model ---
             try:
-                for i in range(hmm_model.n_components): # n_components is the number of states
-                    print(f"  State {i}:")
-                    for feature_name, mean_val in zip(feature_list, hmm_model.means_[i]):
-                         print(f"    {feature_name}: {mean_val:.4f}")
+                os.makedirs('models', exist_ok=True)
+                joblib.dump(scaler, 'models/scaler.pkl')
+                joblib.dump(hmm_model, 'models/hmm_model.pkl')
+                print("Saved scaler and best HMM model to 'models/' directory.")
             except Exception as e:
-                print(f"  Could not print HMM means: {e}")
+                print(f"Warning: Could not save model/scaler: {e}")
 
-            # You could add more analysis here later, e.g., calculate average raw price return per state
-            # Example: Add state column back to df_features if lengths match
-            if len(states) == len(df_features.index):
-                 df_features['state'] = states # Add state column temporarily for analysis
-                 print("\nAverage Raw Price Return per State:")
-                 try:
-                      # Ensure price_return exists before grouping
-                      if 'price_return' in df_features.columns:
-                            print(df_features.groupby('state')['price_return'].mean())
-                      else:
-                            print("  'price_return' column not found for state analysis.")
-                 except Exception as e:
-                      print(f"  Could not calculate average return per state: {e}")
-                 # Remove state column if added only for analysis to avoid issues later if length mismatches occurred
-                 # Or handle alignment more robustly before generate_signals
-                 # For now, we'll leave it assuming lengths match based on previous check
-            else:
-                 print("  Skipping average return per state due to length mismatch.")
-            print("--------------------------\n")
-        # --- End of Added Block ---
+        elif run_mode == 'forwardtest':
+            # --- Load Model & Scaler ---
+            print("\nForward test mode: Loading pre-trained HMM model and scaler...")
+            try:
+                hmm_model = joblib.load('models/hmm_model.pkl')
+                scaler = joblib.load('models/scaler.pkl')
+                print("Loaded HMM model and scaler from 'models/' directory.")
+                best_n_states = hmm_model.n_components # Get n_states from loaded model
+            except FileNotFoundError:
+                 exit("Error: hmm_model.pkl or scaler.pkl not found. Run backtest first.")
+            except Exception as e:
+                 exit(f"Error loading model or scaler: {e}")
 
-        if states is not None:
-            # Ensure 'states' aligns with the original df_features index for signal generation
-            # Need to handle potential length difference if scaling dropped NaNs differently
-            # Let's assume X_scaled corresponds to df_features rows *after* engineering NaNs were dropped
-            # Get the index from df_features that corresponds to X_scaled rows
-            if len(states) == len(df_features.index): # Check if length matches index after engineering NaNs drop
-                 df_features['state'] = states
-            else:
-                 print(f"Warning: Length mismatch between predicted states ({len(states)}) and feature DataFrame index ({len(df_features.index)}). Attempting alignment.")
-                 # If engineer_features dropped NaNs, need to align states back correctly.
-                 # Assuming df_features is the one *after* dropna in engineer_features
-                 # This should ideally not happen if NaNs are handled consistently before scaling.
-                 # For now, let's pad states if needed, or trim df_features index (less safe)
-                 # A safer approach is to ensure X_train/X_forward aligns perfectly with df_features index used later.
-                 # Simplification for now: Assume engineer_features handles NaNs finally
-                 if len(states) < len(df_features.index):
-                      # Pad states with a default value (e.g., last state or 0) - risky assumption
-                      padding = np.full(len(df_features.index) - len(states), states[-1] if len(states)>0 else 0)
-                      states = np.concatenate((states, padding))
+            # --- Scale Forward Data ---
+            X_forward = df_features[feature_list].values
+            if np.any(np.isnan(X_forward)) or np.any(np.isinf(X_forward)):
+                 X_forward = np.nan_to_num(X_forward, nan=0.0, posinf=0.0, neginf=0.0)
+            if len(X_forward) == 0: exit("Error: No data for forward test scaling.")
+
+            print("\nScaling forward test features using loaded scaler...")
+            try:
+                 X_scaled = scaler.transform(X_forward) # Use transform()
+                 print("Forward test features scaled.")
+            except ValueError as ve:
+                 # Catch the feature number mismatch error explicitly
+                 print(f"Error: Feature mismatch during forward test scaling: {ve}")
+                 print("Ensure the 'features' list in config.yaml matches the one used during backtest.")
+                 exit()
+            except Exception as e:
+                 exit(f"Error scaling forward test data: {e}")
+
+
+        # --- Prediction and Backtesting ---
+        if hmm_model and X_scaled is not None and len(X_scaled) > 0:
+            # 4. Predict States
+            states = predict_states(hmm_model, X_scaled)
+
+            # --- HMM State Analysis (Runs on the best model) ---
+            if states is not None:
+                print("\n--- HMM State Analysis (Best Model) ---")
+                print(f"Number of States: {best_n_states}")
+                # (Your existing state analysis print logic here - using hmm_model / best_n_states)
+                print(f"Features used for analysis: {feature_list}")
+                print("Mean of Scaled Features for each State:")
+                try:
+                      for i in range(hmm_model.n_components):
+                           print(f"  State {i}:")
+                           for feature_name, mean_val in zip(feature_list, hmm_model.means_[i]):
+                                print(f"    {feature_name}: {mean_val:.4f}")
+                except Exception as e:
+                      print(f"  Could not print HMM means: {e}")
+
+                if len(states) == len(df_features.index):
                       df_features['state'] = states
-                 elif len(states) > len(df_features.index):
-                      # Trim states - also risky
-                      states = states[:len(df_features.index)]
-                      df_features['state'] = states
-                 else: # Should not happen if length matched above
-                       print("Error aligning states to DataFrame.")
-                       exit()
+                      print("\nAverage Raw Price Return per State:")
+                      try:
+                           if 'price_return' in df_features.columns:
+                                print(df_features.groupby('state')['price_return'].mean())
+                           else: print("  'price_return' column not found.")
+                      except Exception as e: print(f"  Could not calculate average return per state: {e}")
+                else: print("  Skipping average return per state due to length mismatch.")
+                print("--------------------------\n")
 
 
-            # 5. Generate Signals (using df_features which now has 'state')
-            df_signals = generate_signals(df_features, config['signal_map']) # Pass df_features, not states directly
+                # Alignment Logic (Keep as before)
+                if len(states) == len(df_features.index):
+                     df_features['state'] = states
+                else:
+                     print(f"Warning: Length mismatch ...") # Abridged
+                     # Basic padding/trimming
+                     if len(states) < len(df_features.index):
+                           padding = np.full(len(df_features.index) - len(states), states[-1] if len(states)>0 else 0)
+                           states = np.concatenate((states, padding))
+                           df_features['state'] = states
+                     elif len(states) > len(df_features.index):
+                           states = states[:len(df_features.index)]
+                           df_features['state'] = states
+                     else: exit("Error aligning states.")
 
-            # 6. Run Backtest/Forward Test Simulation
-            df_results = run_backtest(df_signals, config['trading_fee_percent'])
+                # 5. Generate Signals
+                # !!! REMINDER: Update signal_map in config based on analysis of BEST n_states !!!
+                signal_map_from_config = config.get('signal_map', {})
+                print(f"Using signal map from config: {signal_map_from_config}")
+                if best_n_states != -1 and len(signal_map_from_config) != best_n_states:
+                     print(f"Warning: Signal map in config has {len(signal_map_from_config)} entries, but best model has {best_n_states} states. Defaulting undefined states to 0 (Hold).")
 
-            # 7. Calculate Performance
-            performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
-            # ... rest of main block ...
+                df_signals = generate_signals(df_features, signal_map_from_config)
+
+                # 6. Run Backtest
+                df_results = run_backtest(df_signals, config['trading_fee_percent'])
+
+                # 7. Calculate Performance
+                performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
+            else:
+                print("Skipping strategy simulation due to state prediction error.")
+        else:
+             print("Skipping prediction/backtesting as HMM model or scaled data is invalid.")
     else:
         print("Could not load or process data. Exiting.")
 

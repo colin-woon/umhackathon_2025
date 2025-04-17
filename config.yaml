@@ -34,19 +34,12 @@ metrics_to_download:
 
 # Time periods for downloading data (Unix timestamp in milliseconds)
 # Backtest Period
+# backtest_start_time_ms: 1577836800000     # Jan 1 2020
 backtest_start_time_ms: 1609459200000     # Jan 1 2021
 backtest_end_time_ms: 1704067199000       # Dec 31 2023
 # Forward Test Period
 forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
 forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
-
-# # Backtest Period
-# # backtest_start_time_ms: 1609459200000     # Jan 1 2021
-# backtest_start_time_ms: 1577836800000     # Jan 1 2020
-# backtest_end_time_ms: 1672531199000       # Dec 31 2022
-# # Forward Test Period
-# forwardtest_start_time_ms: 1672531200000  # Jan 1 2023
-# forwardtest_end_time_ms: 1735689599000    # Dec 31 2024
 
 # Data Preprocessing Settings
 # Define a dictionary of data files to load
@@ -90,40 +83,55 @@ data_files:
     original_columns: ["longShortRatio", "value"]
     target_column: "coinglass_lsr_value"
 
-# Features to use for HMM model training (should match target_column names above or engineered ones)
-
-# Features to use for HMM model training (column names after data loading/preprocessing)
-# Example - adjust based on actual columns and desired features
-# Features to use for HMM model training (column names after data loading/preprocessing)
+# Features to use for HMM model training (Candidate Pool for Selection)
 features:
+  # Price-based
   - "price_return"
-  - "volatility"
-  - "cryptoquant_funding_rate"
-  # - "glassnode_active_value"
-  # - "funding_rate_change"
-  # - "active_addresses_change"
-  - "cryptoquant_inflow_value"
-  - "coinglass_oi_value"
+  - "volatility_10d"
+  # Funding Rate based
+  - "cryptoquant_funding_rate" # Raw value
+  - "funding_rate_change_1d"   # Daily change
+  - "funding_rate_MA_5d"       # 5-day Moving Average
+  # Active Addresses based
+  # - "glassnode_active_value"     # Raw value
+  # - "active_addresses_change_1d" # Daily pct change
+  # Transaction based
+  # - "glassnode_tx_value"         # Raw value
+  # - "tx_count_MA_5d"             # 5-day Moving Average
+  # Combined Activity/Tx based
+  # - "active_addr_tx_ratio"       # Ratio Active/Tx
+  # Inflow based
+  - "cryptoquant_inflow_value"   # Raw value
+  # - "inflow_vol_ratio"           # Ratio Inflow/Volume
+  # Open Interest based
+  - "coinglass_oi_value"         # Raw value (assuming it's the closing OI)
+  # - "oi_change_1d"               # Daily pct change
+  # Long/Short Ratio based (using the generic name from loading)
+  # - "coinglass_lsr_generic"      # Raw value (assuming it's Long Account or Ratio)
+  # - "lsr_MA_5d"                  # 5-day Moving Average
 
 # HMM Settings
-min_hmm_states: 2
-max_hmm_states: 5
+# Avoid going more than 6 states for HMM, as it can lead to overfitting
+min_hmm_states: 3
+max_hmm_states: 6
 # Options: "spherical", "diag", "full", "tied"
 hmm_covariance_type: "diag"
 hmm_iterations: 1000
+state_stability_threshold: 10
 
 # Trading Strategy Settings
 trading_fee_percent: 0.0006
 
-# Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
+# Map HMM states to trading signals (0=Do Nothing, 1=Buy, -1=Sell)
 signal_map:
-  0: 1
-  1: -1
-  2: 0
-  3: 1
-  4: 1
+  0: -1   # Positive return, low vol
+  1: -1  # Negative return, high vol
+  2: -1   # Weak bearish consolidation
+  3: -1   # Strong bullish momentum
+  4: -1   # Mixed signals, high funding but negative price/OI
+  5: -1   # Low vol consolidation
 
 # Backtest/Forward Test Execution Settings
 # Options: "backtest", "forwardtest"
 # run_mode: "backtest"
-run_mode: "forwardtest"
+# run_mode: "forwardtest"

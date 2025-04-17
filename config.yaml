@@ -33,31 +33,64 @@ metrics_to_download:
 
 
 # Time periods for downloading data (Unix timestamp in milliseconds)
-# # Backtest Period
-# backtest_start_time_ms: 1609459200000     # Jan 1 2021
-# backtest_end_time_ms: 1704067199000       # Dec 31 2023
-# # Forward Test Period
-# forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
-# forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
-
 # Backtest Period
 backtest_start_time_ms: 1609459200000     # Jan 1 2021
-backtest_end_time_ms: 1672531199000       # Dec 31 2022
+backtest_end_time_ms: 1704067199000       # Dec 31 2023
 # Forward Test Period
-forwardtest_start_time_ms: 1672531200000  # Jan 1 2023
-forwardtest_end_time_ms: 1735689599000    # Dec 31 2024
+forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
+forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
 
-# --- ML Model & Strategy Settings (Used by main_strategy.py) ---
-# ... (rest of the config remains the same, but update data_files based on new naming) ...
-# Example: Update data_files based on path/params structure
+# # Backtest Period
+# # backtest_start_time_ms: 1609459200000     # Jan 1 2021
+# backtest_start_time_ms: 1577836800000     # Jan 1 2020
+# backtest_end_time_ms: 1672531199000       # Dec 31 2022
+# # Forward Test Period
+# forwardtest_start_time_ms: 1672531200000  # Jan 1 2023
+# forwardtest_end_time_ms: 1735689599000    # Dec 31 2024
+
+# Data Preprocessing Settings
+# Define a dictionary of data files to load
+# eg:
+# [KEY] -- name of the dataset loaded, can be any name
+# [file_base] -- base name of the file to load, without these extensions (_backtest, _forwardtest, .csv)
+# [original_columns] -- list of columns to load from the file (sometimes files have value or v, so we need to cover the possibilities)
+# [target_column] -- name of the column to use in the final dataset (rename the original column to this name)
+#
+# Example:
+# cryptoquant_funding:
+#   file_base: "cryptoquant_btc_market-data_funding-rates"
+#   original_columns: ["fundingRate", "value"]
+#   target_column: "cryptoquant_funding_rate"
+
 data_files:
-  candles: "bybit-linear_candle"
-  cryptoquant_inflow: "cryptoquant_btc_exchange-flows_inflow"
-  cryptoquant_funding: "cryptoquant_btc_market-data_funding-rates"
-  glassnode_active: "glassnode_addresses_active_count"
-  glassnode_tx: "glassnode_transactions_count"
-  coinglass_oi: "coinglass_futures_openInterest_ohlc-history"
-  coinglass_lsr: "coinglass_futures_globalLongShortAccountRatio_history"
+  candles:
+    file_base: "bybit-linear_candle"
+  cryptoquant_inflow:
+    file_base: "cryptoquant_btc_exchange-flows_inflow"
+    original_columns: ["value"]
+    target_column: "cryptoquant_inflow_value"
+  cryptoquant_funding:
+    file_base: "cryptoquant_btc_market-data_funding-rates"
+    original_columns: ["fundingRate", "value"]
+    target_column: "cryptoquant_funding_rate"
+  glassnode_active:
+    file_base: "glassnode_addresses_active_count"
+    original_columns: ["value", "v"]
+    target_column: "glassnode_active_value"
+  glassnode_tx:
+    file_base: "glassnode_transactions_count"
+    original_columns: ["value", "v"]
+    target_column: "glassnode_tx_value"
+  coinglass_oi:
+    file_base: "coinglass_futures_openInterest_ohlc-history"
+    original_columns: ["openInterest", "c"]
+    target_column: "coinglass_oi_value"
+  coinglass_lsr:
+    file_base: "coinglass_futures_globalLongShortAccountRatio_history"
+    original_columns: ["longShortRatio", "value"]
+    target_column: "coinglass_lsr_value"
+
+# Features to use for HMM model training (should match target_column names above or engineered ones)
 
 # Features to use for HMM model training (column names after data loading/preprocessing)
 # Example - adjust based on actual columns and desired features
@@ -84,37 +117,13 @@ trading_fee_percent: 0.0006
 
 # Map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell)
 signal_map:
-  0: 1 # State 0 (Neg raw return) -> Sell
-  1: -1  # State 1 (Highest raw return) -> Buy
-  2: 1  # State 2 (2nd highest raw return) -> Buy
-  3: 0  # State 3 (Positive raw return, low vol?) -> Buy
-  # 4: 1  # State 4 (Mixed signals, high vol) -> Hold
+  0: 1
+  1: -1
+  2: 0
+  3: 1
+  4: 1
 
 # Backtest/Forward Test Execution Settings
 # Options: "backtest", "forwardtest"
-run_mode: "backtest"
-# run_mode: "forwardtest"
-
-# --- Performance Summary ---
-# Total Return (%): 97.8440
-# Annualized Sharpe Ratio: 1.0085
-# Maximum Drawdown (%): -19.9845
-# Trade Frequency (%): 1.6438
-# Number of Trades: 18.0000
-# ---------------------------
-
-# --- Performance Summary ---
-# Total Return (%): 308.8723
-# Annualized Sharpe Ratio: 1.1167
-# Maximum Drawdown (%): -51.1727
-# Trade Frequency (%): 5.0228
-# Number of Trades: 55.0000
-# ---------------------------
-
-# --- Performance Summary ---
-# Total Return (%): 109.1120
-# Annualized Sharpe Ratio: 0.8237
-# Maximum Drawdown (%): -35.7398
-# Trade Frequency (%): 4.4749
-# Number of Trades: 49.0000
-# ---------------------------
+# run_mode: "backtest"
+run_mode: "forwardtest"

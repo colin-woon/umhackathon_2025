@@ -37,10 +37,14 @@ def load_and_preprocess_data(config, mode='backtest'):
 
     # --- Load Base Candle Data ---
     try:
-        candle_file_base = data_files.get(base_candle_key, None)
-        if not candle_file_base:
-            raise ValueError(f"'{base_candle_key}' missing in config['data_files']")
-        candle_path = os.path.join(data_dir, f"{candle_file_base}{suffix}.csv")
+        candle_info = data_files.get(base_candle_key, None) # Get the dictionary for candles
+        if not isinstance(candle_info, dict) or 'file_base' not in candle_info:
+             # Handle cases where 'candles' entry is missing, not a dict, or lacks 'file_base'
+             raise ValueError(f"'{base_candle_key}' entry in config['data_files'] is missing or improperly configured (must be a dict with 'file_base').")
+
+        candle_file_base_str = candle_info['file_base'] # Extract the file_base string
+
+        candle_path = os.path.join(data_dir, f"{candle_file_base_str}{suffix}.csv")
         print(f"Loading candles: {candle_path}")
         df_candles = pd.read_csv(candle_path, index_col='timestamp', parse_dates=True)
 
@@ -72,36 +76,35 @@ def load_and_preprocess_data(config, mode='backtest'):
         return None, None
 
     # --- Load and Merge Other Data Files ---
-    for key, file_base in data_files.items():
+    for key, file_info in data_files.items():
         if key == base_candle_key:
             continue
+
+        # Ensure file_info is a dictionary (handles the simple 'candles' case if needed)
+        if not isinstance(file_info, dict):
+            print(f"Warning: Skipping entry '{key}' in data_files as it's not a dictionary.")
+            continue
+
+        file_base = file_info.get('file_base')
+        original_columns = file_info.get('original_columns', []) # Get list of potential original cols
+        target_col_name = file_info.get('target_column')       # Get the desired target name
+
+        if not file_base or not target_col_name:
+            print(f"Warning: Skipping entry '{key}' due to missing 'file_base' or 'target_column' in config.")
+            continue
+
         try:
             file_path = os.path.join(data_dir, f"{file_base}{suffix}.csv")
             print(f"Loading {key}: {file_path}")
             df_temp = pd.read_csv(file_path, index_col='timestamp', parse_dates=True)
 
             col_to_use = None
-            # --- Define TARGET column name explicitly based on key ---
-            target_col_name = None
-            if key == 'cryptoquant_funding':
-                target_col_name = 'cryptoquant_funding_rate' # Desired final name
-                if 'fundingRate' in df_temp.columns: col_to_use = 'fundingRate'
-                elif 'value' in df_temp.columns: col_to_use = 'value'
-            elif key == 'glassnode_active':
-                target_col_name = 'glassnode_active_value' # Desired final name
-                if 'value' in df_temp.columns: col_to_use = 'value'
-                elif 'v' in df_temp.columns: col_to_use = 'v' # Use 'v' if 'value' not present
-            elif key == 'cryptoquant_inflow': # Add specific cases as needed
-                 target_col_name = 'cryptoquant_inflow_value'
-                 if 'value' in df_temp.columns: col_to_use = 'value'
-            elif key == 'glassnode_tx':
-                 target_col_name = 'glassnode_tx_value'
-                 if 'value' in df_temp.columns: col_to_use = 'value'
-                 elif 'v' in df_temp.columns: col_to_use = 'v'
-            elif key == 'coinglass_oi':
-                 target_col_name = 'coinglass_oi_value'
-                 if 'openInterest' in df_temp.columns: col_to_use = 'openInterest'
-                 elif 'c' in df_temp.columns: col_to_use = 'c' # Close OI value
+            # Find the first available column from the original_columns list
+            for potential_col in original_columns:
+                if potential_col in df_temp.columns:
+                    col_to_use = potential_col
+                    print(f"  Found specified column '{col_to_use}' for key '{key}'.")
+                    break # Stop searching once found
 
 
             # Fallback if no specific logic or column found

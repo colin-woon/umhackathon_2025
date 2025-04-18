@@ -155,100 +155,149 @@ def load_and_preprocess_data(config, mode='backtest'):
     # Return both the dataframe and the mapping of config keys to final column names
     return merged_df, final_column_names
 
-# --- Feature Engineering (Enhanced with Hypotheses) ---
-def engineer_features(df, final_column_names, config_features):
-    """Creates features for the HMM model with justifications."""
-    print("Engineering features...")
+# --- Feature Engineering (Revised for Core Robust Features) ---
+def engineer_features(df, final_column_names, config_features): # config_features now unused, we use the fixed list
+    """Creates a core set of features for HMM, prioritizing stationarity."""
+    print("Engineering core features...")
     if df is None or df.empty:
         print("Error: Cannot engineer features on empty DataFrame.")
         return None
     df_feat = df.copy()
     print(f"\nDEBUG: Columns available at start of engineer_features: {df_feat.columns.tolist()}\n")
 
-    # --- Base Feature Calculations ---
-    # Hypothesis: Past returns influence future behaviour.
-    df_feat['price_return'] = df_feat['close'].pct_change()
-    # Hypothesis: Recent volatility impacts market regime.
-    df_feat['volatility_10d'] = df_feat['price_return'].rolling(window=10).std() # Use 10-day window
-
-    # --- Engineer Features from Loaded Data (with Hypotheses) ---
-
-    # Funding Rate Features
+    # --- Essential Base Columns ---
+    close_col = 'close'
+    volume_col = 'volume'
     funding_col = final_column_names.get('cryptoquant_funding')
-    if funding_col and funding_col in df_feat.columns:
-        # Hypothesis: The rate of change in funding indicates shifting sentiment momentum.
-        df_feat['funding_rate_change_1d'] = df_feat[funding_col].diff()
-        # Hypothesis: The short-term trend in funding rate reflects prevailing leverage bias.
-        df_feat['funding_rate_MA_5d'] = df_feat[funding_col].rolling(window=5).mean()
-    else:
-        if 'cryptoquant_funding_rate' in config_features: print(f"Warning: Column '{funding_col}' needed for funding features not found.")
-
-    # Active Addresses Features
     active_col = final_column_names.get('glassnode_active')
-    if active_col and active_col in df_feat.columns:
-        # Hypothesis: The percentage change in active addresses reflects network growth/decline.
-        df_feat['active_addresses_change_1d'] = df_feat[active_col].pct_change()
-        # Hypothesis: Active address trend relative to overall activity matters. (Example below uses tx_count)
-    else:
-        if 'glassnode_active_value' in config_features or 'active_addresses_change' in config_features: print(f"Warning: Column '{active_col}' needed for active address features not found.")
-
-    # Transaction Count Features
-    tx_col = final_column_names.get('glassnode_tx')
-    if tx_col and tx_col in df_feat.columns:
-         # Hypothesis: Transaction count reflects overall network usage.
-         df_feat['tx_count_MA_5d'] = df_feat[tx_col].rolling(window=5).mean()
-         # Hypothesis: The ratio of active addresses to transactions might indicate type of usage (e.g., many small vs few large tx).
-         if active_col and active_col in df_feat.columns:
-              # Use pd.to_numeric to handle potential non-numeric data robustly, replace 0 denominator
-              denominator = pd.to_numeric(df_feat[tx_col], errors='coerce').replace(0, np.nan)
-              numerator = pd.to_numeric(df_feat[active_col], errors='coerce')
-              df_feat['active_addr_tx_ratio'] = (numerator / denominator)
-
-    # Inflow Features
+    tx_col = final_column_names.get('glassnode_tx') # Needed for active_addr_tx_ratio calc if used
     inflow_col = final_column_names.get('cryptoquant_inflow')
-    if inflow_col and inflow_col in df_feat.columns:
-         # Hypothesis: Inflow relative to volume indicates significance of exchange flow pressure.
-         if 'volume' in df_feat.columns:
-             # Use pd.to_numeric and handle division by zero
-             denominator = pd.to_numeric(df_feat['volume'], errors='coerce').replace(0, np.nan)
-             numerator = pd.to_numeric(df_feat[inflow_col], errors='coerce')
-             df_feat['inflow_vol_ratio'] = (numerator / denominator)
-
-    # Open Interest Features
     oi_col = final_column_names.get('coinglass_oi')
+    lsr_col = final_column_names.get('coinglass_lsr') # Assuming this holds the raw L/S ratio
+
+    # --- 1. Price Return ---
+    # Hypothesis: Basic market movement.
+    if close_col in df_feat.columns:
+        df_feat['price_return'] = df_feat[close_col].pct_change()
+    else:
+        print(f"Warning: Column '{close_col}' not found for price_return.")
+        df_feat['price_return'] = 0 # Assign default or handle error
+
+    # --- 2. Price Volatility ---
+    # Hypothesis: Market risk regime.
+    df_feat['volatility_10d'] = df_feat['price_return'].rolling(window=10).std()
+
+    # --- 3. Funding Rate Change ---
+    # Hypothesis: Momentum in derivatives sentiment/cost.
+    if funding_col and funding_col in df_feat.columns:
+        df_feat['funding_rate_change_1d'] = df_feat[funding_col].diff()
+    else:
+        print(f"Warning: Column '{funding_col}' not found for funding_rate_change_1d.")
+        df_feat['funding_rate_change_1d'] = 0
+
+    # --- 4. Funding Rate Extreme Flag ---
+    # Hypothesis: Funding extremes signal potential reversals.
+    if funding_col and funding_col in df_feat.columns:
+        rolling_window_90d = 90
+        # Calculate 5th and 95th percentiles over rolling window
+        lower_bound = df_feat[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.05)
+        upper_bound = df_feat[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.95)
+        df_feat['funding_rate_extreme_flag'] = ((df_feat[funding_col] < lower_bound) | (df_feat[funding_col] > upper_bound)).astype(int)
+    else:
+        print(f"Warning: Column '{funding_col}' not found for funding_rate_extreme_flag.")
+        df_feat['funding_rate_extreme_flag'] = 0
+
+    # --- 5. Active Address Rate of Change (14d) ---
+    # Hypothesis: Network adoption/activity momentum.
+    if active_col and active_col in df_feat.columns:
+        df_feat['active_addr_roc_14d'] = df_feat[active_col].pct_change(periods=14)
+    else:
+        print(f"Warning: Column '{active_col}' not found for active_addr_roc_14d.")
+        df_feat['active_addr_roc_14d'] = 0
+
+    # --- 6. Inflow / Volume Ratio ---
+    # Hypothesis: Significance of exchange flow pressure relative to market activity.
+    if inflow_col and inflow_col in df_feat.columns and volume_col in df_feat.columns:
+         denominator = pd.to_numeric(df_feat[volume_col], errors='coerce').replace(0, np.nan)
+         numerator = pd.to_numeric(df_feat[inflow_col], errors='coerce')
+         df_feat['inflow_vol_ratio'] = (numerator / denominator)
+    else:
+         print(f"Warning: Columns needed for inflow_vol_ratio not found ('{inflow_col}', '{volume_col}').")
+         df_feat['inflow_vol_ratio'] = 0
+
+    # --- 7. Open Interest Rate of Change (7d) ---
+    # Hypothesis: Momentum in leverage and market participation.
     if oi_col and oi_col in df_feat.columns:
-         # Hypothesis: Change in open interest signals change in market participation/conviction.
-         df_feat['oi_change_1d'] = df_feat[oi_col].pct_change()
+        df_feat['oi_roc_7d'] = df_feat[oi_col].pct_change(periods=7)
+    else:
+        print(f"Warning: Column '{oi_col}' not found for oi_roc_7d.")
+        df_feat['oi_roc_7d'] = 0
 
-    # Long/Short Ratio Features (Using the generic column name from your load log)
-    lsr_col = final_column_names.get('coinglass_lsr') # This resolved to 'coinglass_lsr_generic'
+    # --- 8. & 9. L/S Ratio Z-Score & Extreme Flag ---
+    # Hypothesis: Statistically extreme retail sentiment signals potential reversals.
     if lsr_col and lsr_col in df_feat.columns:
-         # Hypothesis: The trend in L/S ratio reflects retail sentiment shifts.
-         # Note: Log showed this loaded 'longAccount'. If ratio needs calculating: longAccount / shortAccount
-         # For now, just use the loaded column if it represents the ratio, or calculate MA.
-         df_feat['lsr_MA_5d'] = df_feat[lsr_col].rolling(window=5).mean()
+        rolling_window_90d_lsr = 90
+        lsr_series = pd.to_numeric(df_feat[lsr_col], errors='coerce')
+        rolling_mean = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).mean()
+        rolling_std = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).std()
+        # Calculate Z-score, handle potential division by zero if std is 0
+        df_feat['lsr_zscore_90d'] = (lsr_series - rolling_mean) / rolling_std.replace(0, np.nan)
+        # Extreme Flag based on Z-score
+        z_threshold = 2.0
+        df_feat['lsr_extreme_flag'] = ((df_feat['lsr_zscore_90d'] > z_threshold) | (df_feat['lsr_zscore_90d'] < -z_threshold)).astype(int)
+    else:
+        print(f"Warning: Column '{lsr_col}' not found for lsr_zscore_90d/lsr_extreme_flag.")
+        df_feat['lsr_zscore_90d'] = 0
+        df_feat['lsr_extreme_flag'] = 0
+
+    # --- 10. OI Change x Price Change Interaction ---
+    # Hypothesis: Combined momentum confirms trends or signals divergences.
+    # Using 1-day OI change for closer interaction timing, assuming oi_change_1d exists or can be calc'd easily
+    if oi_col and oi_col in df_feat.columns: # Recalculate 1d OI change if not present
+         if 'oi_change_1d' not in df_feat.columns:
+              df_feat['oi_change_1d'] = df_feat[oi_col].pct_change(periods=1)
+         df_feat['oi_change_x_price_change'] = df_feat['oi_change_1d'] * df_feat['price_return']
+    else:
+         print(f"Warning: Columns needed for oi_change_x_price_change not found ('{oi_col}', 'price_return').")
+         df_feat['oi_change_x_price_change'] = 0
 
 
-    # --- Clean up NaNs introduced by calculations ---
-    # Use forward fill first, then backward fill for robustness
-    df_feat.fillna(method='ffill', inplace=True)
-    df_feat.fillna(method='bfill', inplace=True)
-    # Fill any remaining NaNs (e.g., if entire column was NaN initially) with 0
-    df_feat.fillna(0, inplace=True)
-    # Replace any potential infinities resulting from division by zero etc.
-    df_feat.replace([np.inf, -np.inf], 0, inplace=True)
+    # --- Select only the core features for the final DataFrame ---
+    core_features_list = [
+        "price_return",
+        "volatility_10d",
+        "funding_rate_change_1d",
+        "funding_rate_extreme_flag",
+        "active_addr_roc_14d",
+        "inflow_vol_ratio",
+        "oi_roc_7d",
+        "lsr_zscore_90d", # Keep Z-score, it's more informative than just the flag
+        # "lsr_extreme_flag", # Can be excluded if Z-score is used, or keep both
+        "oi_change_x_price_change"
+    ]
+    # Also add back 'close' column needed for backtesting calculations downstream
+    if close_col in df.columns:
+         core_features_list.append(close_col)
+
+    df_final_feat = df_feat[[col for col in core_features_list if col in df_feat.columns]].copy()
 
 
-    print(f"Features engineered. Data shape: {df_feat.shape}")
-    print(f"Engineered columns available: {df_feat.columns.tolist()}")
+    # --- Clean up NaNs/Infs introduced by calculations in the final selection ---
+    df_final_feat.fillna(method='ffill', inplace=True)
+    df_final_feat.fillna(method='bfill', inplace=True)
+    df_final_feat.fillna(0, inplace=True) # Fill any remaining NaNs with 0
+    df_final_feat.replace([np.inf, -np.inf], 0, inplace=True)
 
-    # --- Final Check: Removed FATAL error, handle missing features in main block ---
-    # Check if features expected by config still exist after engineering
-    # missing_check = [f for f in config_features if f not in df_feat.columns]
-    # if missing_check:
-    #      print(f"Warning: Some features listed in config might be missing post-engineering: {missing_check}")
+    print(f"Core features engineered. Data shape: {df_final_feat.shape}")
+    print(f"Engineered columns available: {df_final_feat.columns.tolist()}")
 
-    return df_feat
+    # Ensure no NaNs/Infs remain in the final DataFrame before returning
+    if df_final_feat.isnull().values.any() or np.isinf(df_final_feat.select_dtypes(include=np.number)).values.any():
+         print("Warning: NaNs or Infs still present after cleaning!")
+         # Optional: Implement stricter cleaning or return None
+         # df_final_feat = df_final_feat.fillna(0).replace([np.inf, -np.inf], 0) # Re-apply just in case
+
+    return df_final_feat
 
 # --- HMM Model (Modified for Scaled Data & Reduced Verbosity) ---
 def train_hmm(X_scaled, n_states, covariance_type, n_iter): # Takes X_scaled directly

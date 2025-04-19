@@ -132,7 +132,7 @@ features:
   # - "funding_rate_x_oi_change"     # Smoothed Funding Rate * OI RoC
 
 # HMM Settings
-# Avoid going more than 6 states for HMM, as it can lead to overfitting
+# Avoid going more than 8 states for HMM, as it can lead to overfitting
 min_hmm_states: 3
 max_hmm_states: 8
 # Options: "spherical", "diag", "full", "tied"
@@ -179,13 +179,51 @@ trading_fee_percent: 0.0006
 #   6: 1  # Strong bullish momentum / blow-off
 #   7: -1  # Negative return, low vol
 
+# --- FINAL BACKTEST PERFORMANCE ---
+# Calculating performance metrics...
+
+# --- Performance Summary ---
+# Total Return (%): 1137.6519
+# Annualized Sharpe Ratio: 2.0889
+# Maximum Drawdown (%): -28.1868
+# Trade Frequency (%): 10.7763
+# Number of Trades: 118.0000
+# ---------------------------
+
+
+# --- Running Final Forward Test ---
+# Generating trading signals...
+# Signals generated.
+# Running backtest...
+# Backtest finished.
+
+# --- FINAL FORWARD TEST PERFORMANCE ---
+# Calculating performance metrics...
+
+# --- Performance Summary ---
+# Total Return (%): 240.5685
+# Annualized Sharpe Ratio: 2.7558
+# Maximum Drawdown (%): -17.9154
+# Trade Frequency (%): 9.0164
+# Number of Trades: 33.0000
+# ---------------------------
+# signal_map:
+#   0: 0   # Strong negative return, high LSR
+#   1: 1   # Positive return, extreme funding
+#   2: 1   # Positive return, low vol
+#   3: 0  # High vol consolidation
+#   4: 0   # Positive return, very high LSR
+#   5: 0   # Crash / Capitulation
+#   6: 1  # Strong bullish momentum / blow-off
+#   7: -1  # Negative return, low vol
+
 signal_map:
-  0: 1   # Strong negative return, high LSR
+  0: -1   # Strong negative return, high LSR
   1: 1   # Positive return, extreme funding
   2: 1   # Positive return, low vol
-  3: -1  # High vol consolidation
+  3: 0  # High vol consolidation
   4: 0   # Positive return, very high LSR
-  5: 0   # Crash / Capitulation
+  5: -1   # Crash / Capitulation
   6: 1  # Strong bullish momentum / blow-off
   7: -1  # Negative return, low vol
 

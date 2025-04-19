@@ -153,8 +153,8 @@ signal_map:
   1: 1   # Positive return, extreme funding
   2: 1   # Positive return, low vol
   3: 0  # High vol consolidation
-  4: 0   # Positive return, very high LSR
-  5: 0   # Crash / Capitulation
+  4: -1   # Positive return, very high LSR
+  5: 1   # Crash / Capitulation
   6: 1  # Strong bullish momentum / blow-off
   7: -1  # Negative return, low vol
 

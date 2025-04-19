@@ -1355,6 +1355,20 @@ def run_permutation_test(df_signals_original, config, period_label="Permutation"
 
     return summary_stats
 
+# Helper function to save data artifacts safely
+def save_data_artifact(data, filename, directory):
+    """Saves data using joblib, creating the directory if needed."""
+    if data is None:
+        print(f"Warning: Data is None, skipping saving {filename}")
+        return
+    try:
+        os.makedirs(directory, exist_ok=True)
+        filepath = os.path.join(directory, filename)
+        joblib.dump(data, filepath)
+        print(f"Saved data artifact: {filepath}")
+    except Exception as e:
+        print(f"Warning: Could not save data artifact {filename}: {e}")
+
 # --- Main Execution (Including Plotting and Saving) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
@@ -1433,7 +1447,8 @@ if __name__ == "__main__":
 
     # --- Save Model Artifacts ---
     # <<<< CALL NEW FUNCTION >>>>
-    save_model_and_scaler(hmm_model, scaler, directory=os.path.join(run_output_dir, 'models'))
+    artifacts_dir = os.path.join(run_output_dir, 'artifacts') # <<< Define artifacts subdir
+    save_model_and_scaler(hmm_model, scaler, directory=artifacts_dir) # <<< Save to subdir
 
 
     # --- Predict States ---
@@ -1442,6 +1457,15 @@ if __name__ == "__main__":
     states_backtest = predict_states(hmm_model, X_scaled_backtest)
     states_forwardtest = predict_states(hmm_model, X_scaled_forwardtest)
 
+# --- Save States and Features Data --- # <<< NEW SECTION >>>
+    print("\n--- Saving States and Feature Data ---")
+    save_data_artifact(states_backtest, 'states_backtest.pkl', artifacts_dir)
+    save_data_artifact(states_forwardtest, 'states_forwardtest.pkl', artifacts_dir)
+    # Save the dataframes used for HMM input (needed for signal gen/backtest)
+    save_data_artifact(df_features_backtest, 'df_features_backtest.pkl', artifacts_dir)
+    save_data_artifact(df_features_forwardtest, 'df_features_forwardtest.pkl', artifacts_dir)
+    # Also save the selected feature list used by the model
+    save_data_artifact(feature_list, 'selected_features.pkl', artifacts_dir)
 
     # --- Within-Backtest State Stability Check --- ## <<<< MODIFIED CALL >>>>
     # Pass states, the corresponding index, and the config object

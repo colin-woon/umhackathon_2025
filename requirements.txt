@@ -7,3 +7,5 @@ scikit-learn>=1.3.0
 python-dotenv
 matplotlib
 seaborn
+scikit-optimize
+joblib

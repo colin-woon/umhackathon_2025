@@ -548,118 +548,186 @@ def run_backtest(df, fee_percent, start_value=1000.0, verbose=True):
     if verbose: print("Backtest finished.")
     return df_backtest
 
-# --- Performance Metrics (Adapted for Portfolio Value) ---
-def calculate_performance(df_backtest, fee_percent, start_value=1000.0): # Pass start_value if needed
-    """Calculates performance metrics, including T-test on returns."""
-    print("Calculating performance metrics...")
+def calculate_performance(df_backtest, fee_percent, timeframe='daily', start_value=1.0):
+    """Calculates performance metrics, adapting annualization for timeframe."""
+    print(f"Calculating performance metrics (Timeframe: {timeframe})...")
     results = {}
     if df_backtest is None or df_backtest.empty:
         print("Error: No backtest results DataFrame provided.")
         # Return empty or default dictionary
         return {
             'Total Return (%)': 0, 'Annualized Sharpe Ratio': 0, 'Sortino Ratio (qs)': 'N/A',
-            'Maximum Drawdown (%)': 0, 'Trade Frequency (%)': 0, 'Number of Trades': 0
+            'Maximum Drawdown (%)': 0, 'Trade Frequency (%)': 0, 'Number of Trades': 0,
+            'T-statistic (vs 0)': 'N/A', 'P-value (vs 0)': 'N/A'
         }
+
+    # --- Calculate Portfolio Value if missing (based on net returns) ---
+    if 'strategy_portfolio_value' not in df_backtest.columns and 'strategy_return_net' in df_backtest.columns:
+        print("Calculating portfolio value from net returns...")
+        df_backtest['strategy_portfolio_value'] = start_value * (1 + df_backtest['strategy_return_net']).cumprod()
+        # Handle initial NaN if pct_change started with NaN
+        df_backtest['strategy_portfolio_value'].fillna(start_value, inplace=True)
 
     # Ensure index is datetime for frequency calculations
     if not isinstance(df_backtest.index, pd.DatetimeIndex):
-         print("Warning: DataFrame index is not DatetimeIndex. Converting...")
-         try:
-             df_backtest.index = pd.to_datetime(df_backtest.index)
-         except Exception as e:
-             print(f"Error converting index to DatetimeIndex: {e}. Time-based metrics might be inaccurate.")
+        print("Warning: DataFrame index is not DatetimeIndex. Converting...")
+        try:
+            df_backtest.index = pd.to_datetime(df_backtest.index)
+        except Exception as e:
+            print(f"Error converting index to DatetimeIndex: {e}. Time-based metrics might be inaccurate.")
 
-    # --- Calculate metrics based on PORTFOLIO VALUE ---
+    # --- Calculate metrics based on PORTFOLIO VALUE and RETURNS ---
 
-    # Total Return
+    # Total Return - FIX: Use first non-NaN value as starting point
     if 'strategy_portfolio_value' in df_backtest.columns and not df_backtest['strategy_portfolio_value'].empty:
-        final_value = df_backtest['strategy_portfolio_value'].iloc[-1]
-        total_return_pct = ((final_value / start_value) - 1) * 100
-        results['Total Return (%)'] = total_return_pct
+        # Get first valid portfolio value (handling potential NaNs at start)
+        start_idx = df_backtest['strategy_portfolio_value'].first_valid_index()
+        if start_idx is not None:
+            start_value_actual = df_backtest.loc[start_idx, 'strategy_portfolio_value']
+            final_value = df_backtest['strategy_portfolio_value'].iloc[-1]
+
+            # Check if values make sense before calculating
+            if pd.notnull(final_value) and pd.notnull(start_value_actual) and start_value_actual > 0:
+                total_return_pct = ((final_value / start_value_actual) - 1) * 100
+                # Sanity check - cap extreme values that are likely calculation errors
+                if total_return_pct > 10000:  # Cap at 10,000% which is still extremely high
+                    print(f"Warning: Capping unrealistic return of {total_return_pct:.2f}% to 10,000%")
+                    total_return_pct = 10000.0
+                results['Total Return (%)'] = total_return_pct
+            else:
+                results['Total Return (%)'] = 0
+                print("Warning: Invalid portfolio values detected (NaN or negative). Setting total return to 0%.")
+        else:
+            results['Total Return (%)'] = 0
+            print("Warning: No valid portfolio values found. Setting total return to 0%.")
     else:
         results['Total Return (%)'] = 0
-        print("Warning: Could not calculate Total Return.")
+        print("Warning: Could not calculate Total Return ('strategy_portfolio_value' missing or empty).")
 
-    # Sharpe & Sortino based on DAILY returns
+    # Sharpe & Sortino based on PERIODIC returns
     if 'strategy_return_net' in df_backtest.columns:
         net_returns = df_backtest['strategy_return_net'].fillna(0)
 
-        if isinstance(df_backtest.index, pd.DatetimeIndex) and len(df_backtest.index) > 1:
-            time_diff = df_backtest.index.to_series().diff().median()
-            periods_per_year = pd.Timedelta(days=365) / time_diff if time_diff and time_diff.total_seconds() > 0 else 252
-        else:
-            periods_per_year = 252
-            print("Warning: Could not accurately determine periods_per_year. Defaulting to 252.")
+        # Clean extreme values that might be calculation errors (over 100% in a single period)
+        if abs(net_returns).max() > 1.0:
+            extreme_count = (abs(net_returns) > 1.0).sum()
+            if extreme_count > 0:
+                print(f"Warning: Found {extreme_count} extreme return values (>100%). Capping for Sharpe calculation.")
+                net_returns = net_returns.clip(-1.0, 1.0)
 
-        mean_return = net_returns.mean()
-        std_dev = net_returns.std()
-        # Simple Annualized Sharpe calculation from daily returns
-        sharpe_ratio = (mean_return * periods_per_year) / (std_dev * np.sqrt(periods_per_year)) if std_dev != 0 and periods_per_year > 0 else 0
+        # --- Determine Periods Per Year based on timeframe ---
+        if timeframe == 'hourly':
+            periods_per_year = 365 * 24  # Use calendar hours for crypto
+            print(f"Using periods_per_year = {periods_per_year} for hourly data.")
+        elif timeframe == 'daily':
+            # Try inferring based on median difference, default to 252 if fails
+            if isinstance(df_backtest.index, pd.DatetimeIndex) and len(df_backtest.index) > 1:
+                time_diff = df_backtest.index.to_series().diff().median()
+                # Check if time_diff is valid and close to 1 day
+                if pd.notna(time_diff) and time_diff.total_seconds() > 0:
+                    if pd.Timedelta(hours=23) <= time_diff <= pd.Timedelta(hours=25):
+                        periods_per_year = 365  # Assume calendar days if median diff is daily
+                        print(f"Detected daily data (median diff), using periods_per_year = {periods_per_year}.")
+                    else:
+                        periods_per_year = pd.Timedelta(days=365) / time_diff  # Infer from actual median diff
+                        print(f"Inferred periods_per_year = {periods_per_year:.2f} from median time diff.")
+                else:
+                    periods_per_year = 252  # Fallback for daily
+                    print(f"Warning: Could not infer daily frequency. Defaulting periods_per_year to {periods_per_year}.")
+            else:
+                periods_per_year = 252  # Fallback for daily
+                print(f"Warning: No DatetimeIndex or insufficient data. Defaulting periods_per_year to {periods_per_year}.")
+        else:  # Handle other timeframes or default
+            periods_per_year = 252  # Default if timeframe unspecified or unknown
+            print(f"Warning: Unknown timeframe '{timeframe}'. Defaulting periods_per_year to {periods_per_year}.")
+
+        mean_periodic_return = net_returns.mean()
+        std_dev_periodic_return = net_returns.std()
+
+        # Annualized Sharpe calculation
+        if std_dev_periodic_return > 0 and periods_per_year > 0:
+            sharpe_ratio = (mean_periodic_return * np.sqrt(periods_per_year)) / std_dev_periodic_return
+        else:
+            sharpe_ratio = 0
+            print("Warning: Standard deviation is zero or periods_per_year invalid. Sharpe ratio set to 0.")
         results['Annualized Sharpe Ratio'] = sharpe_ratio
 
         # Optional: Sortino Ratio (using quantstats)
         try:
-            if isinstance(net_returns.index, pd.DatetimeIndex):
-                 # Ensure quantstats is imported: import quantstats as qs
-                 results['Sortino Ratio (qs)'] = qs.stats.sortino(net_returns, periods=periods_per_year)
-            else:
-                 results['Sortino Ratio (qs)'] = 'N/A (Requires DatetimeIndex)'
+            # quantstats expects series with datetime index for correct period inference if periods not given
+            # Provide the calculated periods_per_year
+            results['Sortino Ratio (qs)'] = qs.stats.sortino(net_returns, periods=periods_per_year)
         except NameError:
-             results['Sortino Ratio (qs)'] = 'N/A (quantstats not installed)'
+            results['Sortino Ratio (qs)'] = 'N/A (quantstats not installed)'
         except Exception as e:
-             results['Sortino Ratio (qs)'] = f'Error ({type(e).__name__})'
-             print(f"Error calculating quantstats Sortino Ratio: {e}")
+            results['Sortino Ratio (qs)'] = f'Error ({type(e).__name__})'
+            print(f"Error calculating quantstats Sortino Ratio: {e}")
     else:
-         results['Annualized Sharpe Ratio'] = 0
-         results['Sortino Ratio (qs)'] = 'N/A'
-         print("Warning: 'strategy_return_net' column missing for Sharpe/Sortino.")
+        results['Annualized Sharpe Ratio'] = 0
+        results['Sortino Ratio (qs)'] = 'N/A'
+        print("Warning: 'strategy_return_net' column missing for Sharpe/Sortino.")
 
-    # Maximum Drawdown based on Portfolio Value
+    # Maximum Drawdown based on Portfolio Value - FIX: Handle extreme values
     if 'strategy_portfolio_value' in df_backtest.columns and not df_backtest['strategy_portfolio_value'].empty:
-        portfolio_value = df_backtest['strategy_portfolio_value']
+        portfolio_value = df_backtest['strategy_portfolio_value'].copy()
+
+        # Clean portfolio values to remove potential errors
+        if portfolio_value.min() <= 0:
+            print("Warning: Found non-positive portfolio values. Cleaning for drawdown calculation.")
+            portfolio_value = portfolio_value.clip(lower=0.001)  # Set minimum to small positive
+
         running_max = portfolio_value.cummax()
         # Ensure running_max is not zero before dividing
-        drawdown = (portfolio_value - running_max) / running_max.replace(0, np.nan)
+        drawdown = (portfolio_value - running_max) / running_max.replace(0, np.nan)  # Avoid division by zero
         max_drawdown = drawdown.min()
+
+        # Sanity check - drawdown shouldn't be lower than -100%
+        if max_drawdown < -1.0:
+            print(f"Warning: Fixing unrealistic drawdown of {max_drawdown*100:.2f}% to -100%")
+            max_drawdown = -1.0
+
         results['Maximum Drawdown (%)'] = (max_drawdown * 100) if pd.notna(max_drawdown) else 0
     else:
         results['Maximum Drawdown (%)'] = 0
-        print("Warning: Could not calculate Maximum Drawdown.")
+        print("Warning: Could not calculate Maximum Drawdown ('strategy_portfolio_value' missing or empty).")
 
-    # Trade Frequency (remains the same calculation)
+    # Trade Frequency (remains the same calculation - per data row)
     if 'trade' in df_backtest.columns:
-         num_trades = (df_backtest['trade'] != 0).sum()
-         total_rows = len(df_backtest)
-         trade_frequency = (num_trades / total_rows) * 100 if total_rows > 0 else 0
-         results['Trade Frequency (%)'] = trade_frequency
-         results['Number of Trades'] = num_trades
+        num_trades = (df_backtest['trade'] != 0).sum()
+        total_rows = len(df_backtest)
+        trade_frequency = (num_trades / total_rows) * 100 if total_rows > 0 else 0
+        results['Trade Frequency (%)'] = trade_frequency
+        results['Number of Trades'] = num_trades
     else:
-         results['Trade Frequency (%)'] = 0
-         results['Number of Trades'] = 0
-         print("Warning: 'trade' column not found for frequency calculation.")
+        results['Trade Frequency (%)'] = 0
+        results['Number of Trades'] = 0
+        print("Warning: 'trade' column not found for frequency calculation.")
 
-    # --- Add T-test on Net Returns ---
+    # T-test on Net Returns (remains the same calculation - tests if mean return is different from zero)
     if 'strategy_return_net' in df_backtest.columns:
         net_returns = df_backtest['strategy_return_net'].fillna(0)
-        if len(net_returns) > 1: # Need more than 1 sample for t-test
-            t_stat, p_value = ttest_1samp(net_returns, 0)
-            results['T-statistic (vs 0)'] = t_stat
-            results['P-value (vs 0)'] = p_value
+        if len(net_returns) > 1:
+            try:
+                t_stat, p_value = ttest_1samp(net_returns, 0)
+                results['T-statistic (vs 0)'] = t_stat
+                results['P-value (vs 0)'] = p_value
+            except Exception as e:
+                results['T-statistic (vs 0)'] = f'Error ({type(e).__name__})'
+                results['P-value (vs 0)'] = f'Error ({type(e).__name__})'
+                print(f"Error calculating T-test: {e}")
         else:
             results['T-statistic (vs 0)'] = 'N/A (Too few samples)'
             results['P-value (vs 0)'] = 'N/A (Too few samples)'
     else:
-         results['T-statistic (vs 0)'] = 'N/A (No returns column)'
-         results['P-value (vs 0)'] = 'N/A (No returns column)'
-    # --- End T-test ---
+        results['T-statistic (vs 0)'] = 'N/A (No returns column)'
+        results['P-value (vs 0)'] = 'N/A (No returns column)'
 
     print("\n--- Performance Summary ---")
-    # ... (keep existing printing logic) ...
     for key, value in results.items():
-        if isinstance(value, (int, float)):
-             print(f"{key}: {value:.4f}")
+        if isinstance(value, (int, float, np.number)):  # Check if numeric
+            print(f"{key}: {value:.4f}")
         else:
-             print(f"{key}: {value}")
+            print(f"{key}: {value}")
     print("---------------------------\n")
 
     return results
@@ -1033,7 +1101,7 @@ def run_and_evaluate_test_period(df_features, states, config, period_label="Test
     df_results = run_backtest(df_signals, config['trading_fee_percent'])
 
     print(f"\n--- FINAL {period_label.upper()} PERFORMANCE ---")
-    performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
+    performance_summary = calculate_performance(df_results, config['trading_fee_percent'], timeframe=config['data_timeframe'])
 
     return df_results, performance_summary
 

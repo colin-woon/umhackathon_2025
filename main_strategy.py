@@ -513,110 +513,87 @@ def find_best_hmm_model(X_scaled, config, feature_list):
     # --- End of Loop ---
     return best_hmm_model, best_n_states, best_bic, best_aic
 
-# --- Main Execution (Refactored with State Stability Check) ---
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
-    parser.add_argument('--config', type=str, default='config.yaml', help='Path to the configuration file.')
-    args = parser.parse_args()
+import pandas as pd
+import numpy as np
 
-    config = load_config(args.config)
+def select_features_by_correlation(df_features_backtest, features_available, corr_threshold):
+    """
+    Performs feature selection by removing highly correlated features.
 
-    # --- Always Load Both Backtest and Forward Test Data ---
-    print("\n--- Loading Data ---")
-    df_raw_backtest, final_column_names_backtest = load_and_preprocess_data(config, mode='backtest')
-    df_raw_forwardtest, final_column_names_forwardtest = load_and_preprocess_data(config, mode='forwardtest')
+    Args:
+        df_features_backtest (pd.DataFrame): DataFrame containing engineered features for backtesting.
+        features_available (list): List of feature names initially available for selection.
+        corr_threshold (float): The correlation threshold above which features will be dropped.
 
-    # Use backtest names map, assuming columns are consistent
-    final_column_names = final_column_names_backtest if final_column_names_backtest else {}
-
-    # Exit if essential data is missing
-    if df_raw_backtest is None or df_raw_backtest.empty: exit("Error: Could not load backtest data.")
-    if df_raw_forwardtest is None or df_raw_forwardtest.empty: exit("Error: Could not load forward test data.")
-
-    # --- Feature Engineering (on both datasets) ---
-    feature_list_from_config = config.get('features', [])
-    if not feature_list_from_config: exit("Error: 'features' list empty.")
-
-    print("\n--- Engineering Features for Backtest Data ---")
-    df_features_backtest = engineer_features(df_raw_backtest, final_column_names, feature_list_from_config)
-    if df_features_backtest is None or df_features_backtest.empty: exit("Error: Backtest feature engineering failed.")
-
-    print("\n--- Engineering Features for Forward Test Data ---")
-    df_features_forwardtest = engineer_features(df_raw_forwardtest, final_column_names, feature_list_from_config)
-    if df_features_forwardtest is None or df_features_forwardtest.empty: exit("Error: Forward test feature engineering failed.")
-
-    # --- Feature Selection (Based on Backtest Data) ---
+    Returns:
+        list: The final list of selected feature names after removing highly correlated ones.
+              Returns the original features_available list if selection cannot be performed.
+    """
     print("\n--- Performing Basic Feature Selection (using Backtest data) ---")
-    features_available = [f for f in feature_list_from_config if f in df_features_backtest.columns]
     print(f"Features available for selection: {features_available}")
-    feature_list = features_available # Default if selection fails below
+    final_feature_list = features_available[:] # Start with all available features
 
-    if len(features_available) > 1:
-        numeric_features_df = df_features_backtest[features_available].select_dtypes(include=np.number)
-        print(f"Numeric features considered for correlation: {numeric_features_df.columns.tolist()}")
-        if len(numeric_features_df.columns) > 1:
-            corr_matrix = numeric_features_df.corr().abs()
-            upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-            corr_threshold = config.get('feature_corr_threshold', 0.95) # Make threshold configurable
-            to_drop = [column for column in upper_tri.columns if any(upper_tri[column] > corr_threshold)]
-            if to_drop:
-                 print(f"Features to drop due to high correlation (>{corr_threshold}): {to_drop}")
-                 feature_list = [f for f in features_available if f not in to_drop]
-            else:
-                 print("No features dropped based on correlation threshold.")
-        else: print("Not enough numeric features for correlation check.")
-    else: print("Not enough features for correlation check.")
+    if len(features_available) <= 1:
+        print("Not enough features available for correlation check.")
+        return final_feature_list
 
-    if not feature_list: exit("Error: Feature selection removed all features.")
-    print(f"\nFeatures selected for HMM: {feature_list}")
+    # Select only numeric features for correlation calculation
+    numeric_features_df = df_features_backtest[features_available].select_dtypes(include=np.number)
+    print(f"Numeric features considered for correlation: {numeric_features_df.columns.tolist()}")
 
-    # --- Prepare Data for Model ---
-    # Ensure selected features exist in both dataframes
-    if not all(f in df_features_backtest.columns for f in feature_list):
-         exit("Error: Selected features missing from backtest feature dataframe.")
-    if not all(f in df_features_forwardtest.columns for f in feature_list):
-         exit("Error: Selected features missing from forward test feature dataframe.")
+    if len(numeric_features_df.columns) <= 1:
+        print("Not enough numeric features for correlation check.")
+        return final_feature_list
 
-    X_backtest = df_features_backtest[feature_list].values
-    X_forwardtest = df_features_forwardtest[feature_list].values
+    # Calculate correlation matrix
+    corr_matrix = numeric_features_df.corr().abs()
+    upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
 
-    # Handle NaNs/Infs
-    if np.any(np.isnan(X_backtest)) or np.any(np.isinf(X_backtest)): X_backtest = np.nan_to_num(X_backtest)
-    if np.any(np.isnan(X_forwardtest)) or np.any(np.isinf(X_forwardtest)): X_forwardtest = np.nan_to_num(X_forwardtest)
+    # Find features to drop
+    to_drop = [column for column in upper_tri.columns if any(upper_tri[column] > corr_threshold)]
 
-    if len(X_backtest) == 0: exit("Error: No backtest data after NaN handling for scaling.")
-    if len(X_forwardtest) == 0: exit("Error: No forward test data after NaN handling for scaling.")
+    if to_drop:
+        print(f"Features to drop due to high correlation (>{corr_threshold}): {to_drop}")
+        final_feature_list = [f for f in features_available if f not in to_drop]
+    else:
+        print("No features dropped based on correlation threshold.")
 
-    # --- Scale Data (Fit on Backtest, Transform Both) ---
-    print("\nFitting scaler on backtest data and scaling features...")
-    scaler = StandardScaler()
-    X_scaled_backtest = scaler.fit_transform(X_backtest)
-    X_scaled_forwardtest = scaler.transform(X_forwardtest) # Use transform only!
-    print("Features scaled for both periods.")
+    if not final_feature_list:
+        print("Warning: Feature selection removed all features! Returning original list.")
+        return features_available # Avoid returning empty list
 
-    # --- Find Best HMM Model (using Backtest Data) ---
-    hmm_model, best_n_states, _, _ = find_best_hmm_model(X_scaled_backtest, config, feature_list)
-    if hmm_model is None: exit("Error: Failed to find suitable HMM model during backtest.")
-    print(f"\n--- Best model selected: n_states = {best_n_states} ---")
+    print(f"\nFeatures selected for HMM: {final_feature_list}")
+    return final_feature_list
 
-    # --- Save Scaler & Best Model ---
+import pandas as pd
+import numpy as np
+
+def perform_state_stability_check(states_backtest, states_forwardtest, stability_threshold):
+    """
+    Compares state distributions between backtest and forward test periods.
+
+    Args:
+        states_backtest (np.ndarray or pd.Series): Predicted states for the backtest period.
+        states_forwardtest (np.ndarray or pd.Series): Predicted states for the forward test period.
+        stability_threshold (float): Max allowed percentage point difference for stability.
+
+    Returns:
+        tuple: (comparison_df, max_diff, model_is_stable)
+               - comparison_df (pd.DataFrame): DataFrame showing percentage distribution.
+               - max_diff (float): Maximum absolute difference found.
+               - model_is_stable (bool): True if max_diff <= threshold, False otherwise.
+               Returns (None, np.inf, False) if check cannot be performed.
+    """
+    print("\n--- State Distribution Comparison ---")
+    model_is_stable = False # Default to not stable
+    max_diff = np.inf
+    comparison_df = None
+
+    if states_backtest is None or states_forwardtest is None or len(states_backtest) == 0 or len(states_forwardtest) == 0:
+        print("Could not perform state stability check due to missing state predictions.")
+        return comparison_df, max_diff, model_is_stable
+
     try:
-        os.makedirs('models', exist_ok=True)
-        joblib.dump(scaler, 'models/scaler.pkl')
-        joblib.dump(hmm_model, 'models/hmm_model.pkl')
-        print("Saved scaler and best HMM model to 'models/' directory.")
-    except Exception as e: print(f"Warning: Could not save model/scaler: {e}")
-
-    # --- Predict States for Both Periods ---
-    print("\nPredicting states for Backtest period...")
-    states_backtest = predict_states(hmm_model, X_scaled_backtest)
-    print("Predicting states for Forward Test period...")
-    states_forwardtest = predict_states(hmm_model, X_scaled_forwardtest)
-
-    # --- State Stability Check ---
-    model_is_stable = False # Flag
-    if states_backtest is not None and states_forwardtest is not None:
-        print("\n--- State Distribution Comparison ---")
         backtest_state_dist = pd.Series(states_backtest).value_counts(normalize=True).sort_index()
         forwardtest_state_dist = pd.Series(states_forwardtest).value_counts(normalize=True).sort_index()
 
@@ -624,15 +601,15 @@ if __name__ == "__main__":
         comparison_df = pd.DataFrame({
             'Backtest %': backtest_state_dist * 100,
             'Forward Test %': forwardtest_state_dist * 100
-        }).fillna(0) # Fill missing states with 0%
+        }).fillna(0).sort_index() # Fill missing states with 0% and sort
 
         print(comparison_df)
 
         # Simple stability check: Max absolute difference in proportions
         max_diff = (comparison_df['Backtest %'] - comparison_df['Forward Test %']).abs().max()
-        stability_threshold = config['state_stability_threshold'] # Configurable threshold %
         print(f"\nMax difference in state proportions: {max_diff:.2f}%")
 
+        # ANSI escape codes for colors
         COLOR_GREEN = "\033[92m" # Bright Green
         COLOR_RED = "\033[91m"   # Bright Red
         COLOR_RESET = "\033[0m"  # Reset color
@@ -641,81 +618,256 @@ if __name__ == "__main__":
             print(f"{COLOR_GREEN}State distributions appear reasonably stable (Max Diff <= {stability_threshold}%).{COLOR_RESET}")
             model_is_stable = True
         else:
-            # Use red for the warning
             print(f"{COLOR_RED}Warning: State distributions differ significantly (Max Diff > {stability_threshold}%). Model/features may lack robustness.{COLOR_RESET}")
-            model_is_stable = False # Explicitly set flag
+            model_is_stable = False
         print("------------------------------------")
-    else:
-        print("Could not perform state stability check due to prediction errors.")
 
-    # --- HMM State Analysis (on Backtest Results for Signal Mapping) ---
-    # Run analysis regardless of stability, but interpret with caution if unstable
-    if states_backtest is not None:
-        print("\n--- HMM State Analysis (Best Model - Backtest Period) ---")
-        # ... (Your existing state analysis print logic here, using hmm_model, best_n_states, feature_list, and df_features_backtest / states_backtest) ...
-        print(f"Number of States: {best_n_states}")
-        print(f"Features used for analysis: {feature_list}")
-        print("Mean of Scaled Features for each State:")
-        try:
-             for i in range(hmm_model.n_components):
-                  print(f"  State {i}:")
-                  for feature_name, mean_val in zip(feature_list, hmm_model.means_[i]):
-                       print(f"    {feature_name}: {mean_val:.4f}")
-        except Exception as e: print(f"  Could not print HMM means: {e}")
-
-        # Ensure alignment before adding state column for analysis
-        if len(states_backtest) == len(df_features_backtest.index):
-             df_features_backtest['state'] = states_backtest # Add state column for analysis
-             print("\nAverage Raw Price Return per State (Backtest):")
-             try:
-                  if 'price_return' in df_features_backtest.columns: print(df_features_backtest.groupby('state')['price_return'].mean())
-                  else: print("  'price_return' column not found.")
-             except Exception as e: print(f"  Could not calculate average return per state: {e}")
-        else: print("  Skipping average return per state analysis due to length mismatch.")
-        print("--------------------------\n")
+    except Exception as e:
+        print(f"Error during state stability check: {e}")
+        # Ensure default return values in case of error during calculation
+        max_diff = np.inf
+        model_is_stable = False
+        # comparison_df might be partially created, leave it as is or set to None
+        comparison_df = None
 
 
-    # --- Final Backtest Execution ---
-    print("\n--- Running Final Backtest ---")
-    if states_backtest is not None:
-         # Add states column if lengths match (check again)
-         if len(states_backtest) == len(df_features_backtest.index):
-              df_features_backtest['state'] = states_backtest
-              signal_map_from_config = config.get('signal_map', {})
-              print(f"Using signal map from config: {signal_map_from_config}")
-              if best_n_states != -1 and len(signal_map_from_config) != best_n_states:
-                   print(f"Warning: Signal map size mismatch! Config: {len(signal_map_from_config)}, Model: {best_n_states}. Defaulting undefined states to 0.")
+    return comparison_df, max_diff, model_is_stable
 
-              df_signals_backtest = generate_signals(df_features_backtest, signal_map_from_config)
-              df_results_backtest = run_backtest(df_signals_backtest, config['trading_fee_percent'])
-              print("\n--- FINAL BACKTEST PERFORMANCE ---")
-              performance_summary_backtest = calculate_performance(df_results_backtest, config['trading_fee_percent'])
-              # Optional: Save backtest results
-              # df_results_backtest.to_csv(os.path.join(config['data_directory'], 'final_backtest_results.csv'))
-         else:
-              print("Skipping final backtest due to state/index length mismatch.")
-    else:
-        print("Skipping final backtest due to state prediction error.")
+def prepare_feature_arrays(df_features_backtest, df_features_forwardtest, feature_list):
+    """
+    Selects features, converts to NumPy arrays, and handles NaNs/Infs.
 
+    Args:
+        df_features_backtest (pd.DataFrame): Engineered features for backtest.
+        df_features_forwardtest (pd.DataFrame): Engineered features for forward test.
+        feature_list (list): List of selected feature names to use.
 
-    # --- Final Forward Test Execution ---
-    print("\n--- Running Final Forward Test ---")
-    if states_forwardtest is not None:
-        # Add states column if lengths match (check again)
-        if len(states_forwardtest) == len(df_features_forwardtest.index):
-             df_features_forwardtest['state'] = states_forwardtest
-             signal_map_from_config = config.get('signal_map', {}) # Use same signal map
-             # Note: No warning print needed here as it was shown before generate_signals in backtest
-             df_signals_forwardtest = generate_signals(df_features_forwardtest, signal_map_from_config)
-             df_results_forwardtest = run_backtest(df_signals_forwardtest, config['trading_fee_percent'])
-             print("\n--- FINAL FORWARD TEST PERFORMANCE ---")
-             performance_summary_forwardtest = calculate_performance(df_results_forwardtest, config['trading_fee_percent'])
-             # Optional: Save forward test results
-             # df_results_forwardtest.to_csv(os.path.join(config['data_directory'], 'final_forwardtest_results.csv'))
+    Returns:
+        tuple: (X_backtest, X_forwardtest) NumPy arrays, or (None, None) if errors occur.
+    """
+    print("\n--- Preparing Data for Model ---")
+    # Ensure selected features exist in both dataframes
+    if not all(f in df_features_backtest.columns for f in feature_list):
+        print("Error: Selected features missing from backtest feature dataframe.")
+        return None, None
+    if not all(f in df_features_forwardtest.columns for f in feature_list):
+        print("Error: Selected features missing from forward test feature dataframe.")
+        return None, None
+
+    X_backtest = df_features_backtest[feature_list].values
+    X_forwardtest = df_features_forwardtest[feature_list].values
+
+    # Handle NaNs/Infs that might remain or be introduced
+    if np.any(np.isnan(X_backtest)) or np.any(np.isinf(X_backtest)):
+        print("Warning: Handling NaNs/Infs in backtest feature array.")
+        X_backtest = np.nan_to_num(X_backtest)
+    if np.any(np.isnan(X_forwardtest)) or np.any(np.isinf(X_forwardtest)):
+        print("Warning: Handling NaNs/Infs in forward test feature array.")
+        X_forwardtest = np.nan_to_num(X_forwardtest)
+
+    if len(X_backtest) == 0:
+        print("Error: No backtest data after NaN handling.")
+        return None, None
+    if len(X_forwardtest) == 0:
+        print("Error: No forward test data after NaN handling.")
+        return None, None
+
+    print("Feature arrays prepared.")
+    return X_backtest, X_forwardtest
+
+def save_model_and_scaler(model, scaler, directory='models'):
+    """Saves the HMM model and scaler to disk."""
+    print(f"\n--- Saving Model and Scaler to '{directory}/' ---")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        joblib.dump(scaler, os.path.join(directory, 'scaler.pkl'))
+        joblib.dump(model, os.path.join(directory, 'hmm_model.pkl'))
+        print("Saved scaler and best HMM model successfully.")
+    except Exception as e:
+        print(f"Warning: Could not save model/scaler: {e}")
+
+import pandas as pd
+
+def analyze_hmm_states(hmm_model, feature_list, df_features_backtest, states_backtest):
+    """
+    Analyzes and prints characteristics of the HMM states based on backtest data.
+
+    Args:
+        hmm_model: The trained hmmlearn model instance.
+        feature_list (list): List of features used in the model.
+        df_features_backtest (pd.DataFrame): Backtest feature dataframe (without 'state').
+        states_backtest (np.ndarray): Predicted states for the backtest period.
+    """
+    if hmm_model is None or states_backtest is None:
+        print("Skipping HMM state analysis due to missing model or states.")
+        return
+
+    print("\n--- HMM State Analysis (Best Model - Backtest Period) ---")
+    best_n_states = hmm_model.n_components
+    print(f"Number of States: {best_n_states}")
+    print(f"Features used for analysis: {feature_list}")
+
+    # Print Mean Scaled Features
+    print("Mean of Scaled Features for each State:")
+    try:
+        # Check if means_ attribute exists (it should for GaussianHMM)
+        if hasattr(hmm_model, 'means_'):
+            for i in range(best_n_states):
+                print(f"  State {i}:")
+                # Ensure feature_list length matches dimensions of means_
+                if len(feature_list) == hmm_model.means_.shape[1]:
+                    for feature_name, mean_val in zip(feature_list, hmm_model.means_[i]):
+                        print(f"    {feature_name}: {mean_val:.4f}")
+                else:
+                    print(f"    Error: Feature list length ({len(feature_list)}) mismatch with model means dimension ({hmm_model.means_.shape[1]}).")
         else:
-             print("Skipping final forward test due to state/index length mismatch.")
+             print("    Model does not have 'means_' attribute for analysis.")
+    except Exception as e:
+        print(f"  Could not print HMM means: {e}")
+
+    # Print Average Raw Return per State
+    # Ensure alignment before adding state column for analysis
+    if len(states_backtest) == len(df_features_backtest.index):
+        # Use assign to create a temporary DataFrame with states without modifying original
+        df_analysis = df_features_backtest.assign(state=states_backtest)
+        print("\nAverage Raw Price Return per State (Backtest):")
+        try:
+            if 'price_return' in df_analysis.columns:
+                avg_returns = df_analysis.groupby('state')['price_return'].mean()
+                print(avg_returns)
+            else:
+                print("  'price_return' column not found in features for analysis.")
+        except Exception as e:
+            print(f"  Could not calculate average return per state: {e}")
     else:
-       print("Skipping final forward test due to state prediction error.")
+        print("  Skipping average return per state analysis due to length mismatch between states and features index.")
+    print("--------------------------\n")
 
+def run_and_evaluate_test_period(df_features, states, config, period_label="Test"):
+    """
+    Adds states, runs signals, backtest simulation, and calculates performance.
 
-    print(f"--- Strategy execution finished ---")
+    Args:
+        df_features (pd.DataFrame): Feature DataFrame for the period.
+        states (np.ndarray): Predicted states for the period.
+        config (dict): Configuration dictionary.
+        period_label (str): Label for printing ('Backtest' or 'Forward Test').
+
+    Returns:
+        tuple: (df_results, performance_summary)
+               - df_results (pd.DataFrame): DataFrame with backtest results.
+               - performance_summary (dict): Dictionary of performance metrics.
+               Returns (None, None) if execution fails.
+    """
+    print(f"\n--- Running Final {period_label} ---")
+    if states is None:
+        print(f"Skipping final {period_label} due to state prediction error.")
+        return None, None
+    if len(states) != len(df_features.index):
+        print(f"Skipping final {period_label} due to state/index length mismatch.")
+        return None, None
+
+    # Safely add 'state' column
+    if 'state' in df_features.columns:
+        df_features = df_features.drop(columns=['state']) # Drop if re-running cell
+    df_features_with_state = df_features.assign(state=states)
+
+    # Run the pipeline
+    signal_map_from_config = config.get('signal_map', {})
+    # Optional: Add signal map size warning here too if desired, or rely on backtest warning
+    print(f"Using signal map from config: {signal_map_from_config}") # Moved print here
+
+    df_signals = generate_signals(df_features_with_state, signal_map_from_config)
+    df_results = run_backtest(df_signals, config['trading_fee_percent'])
+
+    print(f"\n--- FINAL {period_label.upper()} PERFORMANCE ---")
+    performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
+
+    # Optional: Save results
+    # file_name = f'final_{period_label.lower()}_results.csv'
+    # df_results.to_csv(os.path.join(config.get('data_directory', 'data'), file_name))
+    # print(f"Saved {period_label} results to {file_name}")
+
+    return df_results, performance_summary
+# --- Main Execution (Refactored with More Functions) ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
+    parser.add_argument('--config', type=str, default='config.yaml', help='Path to the configuration file.')
+    args = parser.parse_args()
+
+    # --- Configuration ---
+    config = load_config(args.config)
+    if not config: exit(1) # Exit if config loading failed
+
+    # --- Data Loading ---
+    print("\n--- Loading Data ---")
+    df_raw_backtest, final_names_bt = load_and_preprocess_data(config, mode='backtest')
+    df_raw_forwardtest, final_names_ft = load_and_preprocess_data(config, mode='forwardtest')
+    final_column_names = final_names_bt if final_names_bt else {} # Use backtest names map
+    if df_raw_backtest is None or df_raw_backtest.empty: exit("Error: Could not load backtest data.")
+    if df_raw_forwardtest is None or df_raw_forwardtest.empty: exit("Error: Could not load forward test data.")
+
+    # --- Feature Engineering ---
+    feature_list_from_config = config.get('features', [])
+    if not feature_list_from_config: exit("Error: 'features' list in config is empty.")
+    print("\n--- Engineering Features ---") # Combined print message
+    df_features_backtest = engineer_features(df_raw_backtest, final_column_names, feature_list_from_config)
+    df_features_forwardtest = engineer_features(df_raw_forwardtest, final_column_names, feature_list_from_config)
+    if df_features_backtest is None or df_features_backtest.empty: exit("Error: Backtest feature engineering failed.")
+    if df_features_forwardtest is None or df_features_forwardtest.empty: exit("Error: Forward test feature engineering failed.")
+
+    # --- Feature Selection ---
+    features_available = [f for f in feature_list_from_config if f in df_features_backtest.columns]
+    corr_threshold = config.get('feature_corr_threshold', 0.95)
+    feature_list = select_features_by_correlation(df_features_backtest, features_available, corr_threshold)
+    if not feature_list: exit("Error: Feature selection removed all features.")
+
+    # --- Prepare Feature Arrays ---
+    X_backtest, X_forwardtest = prepare_feature_arrays(df_features_backtest, df_features_forwardtest, feature_list)
+    if X_backtest is None or X_forwardtest is None: exit("Error: Failed to prepare feature arrays.")
+
+    # --- Scale Data ---
+    print("\n--- Scaling Data ---")
+    scaler = StandardScaler()
+    X_scaled_backtest = scaler.fit_transform(X_backtest)      # Fit and transform backtest
+    X_scaled_forwardtest = scaler.transform(X_forwardtest) # Only transform forward test
+    print("Features scaled.")
+
+    # --- Find Best HMM Model ---
+    hmm_model, best_n_states, _, _ = find_best_hmm_model(X_scaled_backtest, config, feature_list)
+    if hmm_model is None: exit("Error: Failed to find suitable HMM model.")
+    print(f"\n--- Best model selected: n_states = {best_n_states} ---")
+
+    # --- Save Model Artifacts ---
+    save_model_and_scaler(hmm_model, scaler, directory='models')
+
+    # --- Predict States ---
+    print("\n--- Predicting States ---")
+    states_backtest = predict_states(hmm_model, X_scaled_backtest)
+    states_forwardtest = predict_states(hmm_model, X_scaled_forwardtest)
+
+    # --- State Stability Check ---
+    stability_threshold = config.get('state_stability_threshold', 20)
+    _, _, model_is_stable = perform_state_stability_check(
+        states_backtest, states_forwardtest, stability_threshold
+    )
+    # Optionally use model_is_stable later
+
+    # --- Analyze HMM States (Backtest) ---
+    # Pass the features df *without* the state column for analysis function
+    analyze_hmm_states(hmm_model, feature_list, df_features_backtest, states_backtest)
+
+    # --- Run Backtest Period ---
+    # Pass the features df *without* the state column for execution function
+    results_bt, performance_bt = run_and_evaluate_test_period(
+        df_features_backtest, states_backtest, config, period_label="Backtest"
+    )
+
+    # --- Run Forward Test Period ---
+    # Pass the features df *without* the state column for execution function
+    results_ft, performance_ft = run_and_evaluate_test_period(
+        df_features_forwardtest, states_forwardtest, config, period_label="Forward Test"
+    )
+
+    print(f"\n--- Strategy execution finished ---")
+    # You can now access performance_bt and performance_ft if needed

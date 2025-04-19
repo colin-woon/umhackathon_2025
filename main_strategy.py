@@ -513,9 +513,6 @@ def find_best_hmm_model(X_scaled, config, feature_list):
     # --- End of Loop ---
     return best_hmm_model, best_n_states, best_bic, best_aic
 
-import pandas as pd
-import numpy as np
-
 def select_features_by_correlation(df_features_backtest, features_available, corr_threshold):
     """
     Performs feature selection by removing highly correlated features.
@@ -564,9 +561,6 @@ def select_features_by_correlation(df_features_backtest, features_available, cor
 
     print(f"\nFeatures selected for HMM: {final_feature_list}")
     return final_feature_list
-
-import pandas as pd
-import numpy as np
 
 def perform_state_stability_check(states_backtest, states_forwardtest, stability_threshold):
     """
@@ -685,8 +679,6 @@ def save_model_and_scaler(model, scaler, directory='models'):
         print("Saved scaler and best HMM model successfully.")
     except Exception as e:
         print(f"Warning: Could not save model/scaler: {e}")
-
-import pandas as pd
 
 def analyze_hmm_states(hmm_model, feature_list, df_features_backtest, states_backtest):
     """

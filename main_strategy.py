@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt # For plotting
 import seaborn as sns          # For heatmap
 from datetime import datetime  # For timestamped output directory
 import shutil                 # For copying config file
+from scipy.stats import ttest_1samp
 
 # --- Configuration Loading ---
 def load_config(config_path='config.yaml'):
@@ -547,7 +548,7 @@ def run_backtest(df, fee_percent, start_value=1000.0):
 
 # --- Performance Metrics (Adapted for Portfolio Value) ---
 def calculate_performance(df_backtest, fee_percent, start_value=1000.0): # Pass start_value if needed
-    """Calculates performance metrics based on portfolio value."""
+    """Calculates performance metrics, including T-test on returns."""
     print("Calculating performance metrics...")
     results = {}
     if df_backtest is None or df_backtest.empty:
@@ -635,6 +636,20 @@ def calculate_performance(df_backtest, fee_percent, start_value=1000.0): # Pass 
          results['Number of Trades'] = 0
          print("Warning: 'trade' column not found for frequency calculation.")
 
+    # --- Add T-test on Net Returns ---
+    if 'strategy_return_net' in df_backtest.columns:
+        net_returns = df_backtest['strategy_return_net'].fillna(0)
+        if len(net_returns) > 1: # Need more than 1 sample for t-test
+            t_stat, p_value = ttest_1samp(net_returns, 0)
+            results['T-statistic (vs 0)'] = t_stat
+            results['P-value (vs 0)'] = p_value
+        else:
+            results['T-statistic (vs 0)'] = 'N/A (Too few samples)'
+            results['P-value (vs 0)'] = 'N/A (Too few samples)'
+    else:
+         results['T-statistic (vs 0)'] = 'N/A (No returns column)'
+         results['P-value (vs 0)'] = 'N/A (No returns column)'
+    # --- End T-test ---
 
     print("\n--- Performance Summary ---")
     # ... (keep existing printing logic) ...
@@ -1083,8 +1098,9 @@ def plot_equity_curves(results_bt, results_ft, output_path, start_value=1000.0):
         print(f"Error saving enhanced equity curve plot: {e}")
     plt.close() # Close the plot to free memory
 
-# --- Saving Function ---
-def save_run_summary(config, performance_bt, performance_ft, stability_results, output_dir):
+# --- Need to modify save_run_summary function signature ---
+def save_run_summary(config, performance_bt, performance_ft, stability_results, output_dir,
+                      performance_shuffled_bt=None, performance_shuffled_ft=None): # Added optional args
     """Saves config and performance summaries to a YAML file in the output dir."""
     print(f"\n--- Saving Run Summary to '{output_dir}/' ---")
     summary_data = {
@@ -1092,22 +1108,26 @@ def save_run_summary(config, performance_bt, performance_ft, stability_results, 
         'configuration': config,
         'performance_backtest': performance_bt,
         'performance_forwardtest': performance_ft,
-        'state_stability': stability_results # Include stability results dict
+        'state_stability': stability_results
     }
+    # Add shuffled results if they exist
+    if performance_shuffled_bt:
+        summary_data['performance_backtest_shuffled_signals'] = performance_shuffled_bt
+    if performance_shuffled_ft:
+        summary_data['performance_forwardtest_shuffled_signals'] = performance_shuffled_ft
+
     summary_path = os.path.join(output_dir, 'run_summary.yaml')
+    # ... (rest of saving logic: write YAML, copy config) ...
     try:
         with open(summary_path, 'w') as f:
             yaml.dump(summary_data, f, default_flow_style=False, sort_keys=False)
         print(f"Run summary saved to {summary_path}")
-
-        # Also copy the original config file for exact reference
-        config_source_path = config.get('__source_path__', 'config.yaml') # Get source if stored, else default
+        config_source_path = config.get('__source_path__', 'config.yaml')
         if os.path.exists(config_source_path):
              shutil.copy2(config_source_path, os.path.join(output_dir, 'config_used.yaml'))
              print(f"Copied original config '{config_source_path}' to output directory.")
         else:
              print(f"Warning: Could not find original config at '{config_source_path}' to copy.")
-
     except Exception as e:
         print(f"Error saving run summary: {e}")
 
@@ -1209,6 +1229,41 @@ def plot_pnl_vs_price(results_bt, results_ft, output_path):
     except Exception as e:
         print(f"Error saving Cumulative PnL vs Price plot: {e}")
     plt.close(fig) # Close the figure
+
+# Add this function definition somewhere before the main block
+def run_shuffled_signal_test(df_signals, config, period_label="Shuffled"):
+    """
+    Runs a backtest using randomly shuffled signals to test timing significance.
+
+    Args:
+        df_signals (pd.DataFrame): DataFrame containing 'close', 'signal' etc.
+                                   BEFORE running the main backtest simulation.
+        config (dict): Configuration dictionary.
+        period_label (str): Label for printing output.
+
+    Returns:
+        dict: Performance summary of the shuffled run, or None if error.
+    """
+    print(f"\n--- Running {period_label} Signal Test ---")
+    if df_signals is None or 'signal' not in df_signals.columns:
+        print(f"Cannot run {period_label} test: Invalid input DataFrame.")
+        return None
+
+    df_shuffled = df_signals.copy()
+    # Shuffle the signals randomly
+    df_shuffled['signal'] = np.random.permutation(df_shuffled['signal'].values)
+    print("Signals shuffled randomly.")
+
+    # Run backtest and calculate performance on shuffled signals
+    results_shuffled = run_backtest(df_shuffled, config['trading_fee_percent']) # Assumes start_value=1000 default
+    if results_shuffled is None:
+        print(f"Backtest failed for {period_label} signals.")
+        return {"Error": f"{period_label} backtest failed"}
+
+    print(f"\n--- {period_label.upper()} SIGNAL PERFORMANCE ---")
+    performance_shuffled = calculate_performance(results_shuffled, config['trading_fee_percent'])
+
+    return performance_shuffled
 
 # --- Main Execution (Including Plotting and Saving) ---
 if __name__ == "__main__":
@@ -1334,6 +1389,18 @@ if __name__ == "__main__":
     # Handle potential failure
     if performance_ft is None: performance_ft = {"Error": "Forward test execution failed"}
 
+    # --- Run SHUFFLED Signal Tests (Optional) ---
+    # We need the dataframes that have the original signals *before* backtest calcs overwrite things,
+    # or we need to re-generate signals on the feature dataframes.
+    # Let's assume run_and_evaluate_test_period internally calls generate_signals and returns df_results
+    # which still contains the original 'signal' column alongside results. Check function definitions.
+    # If run_and_evaluate_test_period returns df_results with the original signals:
+    if results_bt is not None:
+         performance_shuffled_bt = run_shuffled_signal_test(results_bt, config, period_label="Backtest Shuffled")
+    if results_ft is not None:
+         performance_shuffled_ft = run_shuffled_signal_test(results_ft, config, period_label="Forward Test Shuffled")
+    # ---- End Shuffled ----
+
     # --- Plot Cumulative PnL vs Price --- ## <<<< MODIFIED CALL >>>>
     pnl_plot_path = os.path.join(run_output_dir, 'cumulative_pnl_vs_price.png')
     plot_pnl_vs_price(results_bt, results_ft, pnl_plot_path)
@@ -1347,8 +1414,8 @@ if __name__ == "__main__":
 
     # --- Save Run Summary ---
     # <<<< CALL NEW FUNCTION >>>>
-    save_run_summary(config, performance_bt, performance_ft, stability_results, run_output_dir)
-
+    save_run_summary(config, performance_bt, performance_ft, stability_results, run_output_dir,
+                      performance_shuffled_bt, performance_shuffled_ft)
 
     print(f"\n--- Strategy execution finished ---")
     print(f"Outputs saved in: {run_output_dir}")

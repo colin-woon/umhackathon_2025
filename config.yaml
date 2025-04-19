@@ -138,14 +138,15 @@ features:
   - "funding_rate_x_oi_change"     # Smoothed Funding Rate * OI RoC
 
 # HMM Settings
+# State distribution for backtest period
 stability_num_backtest_chunks: 3
+state_stability_threshold: 20
 # Avoid going more than 8 states for HMM, as it can lead to overfitting
 min_hmm_states: 3
 max_hmm_states: 8
 # Options: "spherical", "diag", "full", "tied"
 hmm_covariance_type: "tied"
 hmm_iterations: 1000
-state_stability_threshold: 20
 
 # Trading Strategy Settings
 trading_fee_percent: 0.0006

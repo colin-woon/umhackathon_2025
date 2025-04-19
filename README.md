@@ -1,150 +1,175 @@
-# UMHackathon 2025 Quant Trading HMM Strategy
+<div align="center">
+  <h1 style="font-size: 3em;">🤖 libQT 📈</h1>
+  <p><em>Hidden Markov Model Trading Strategy Framework</em></p>
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python 3.8+">
+    <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT">
+    <img src="https://img.shields.io/badge/UMHackathon-2025-purple.svg" alt="UMHackathon 2025">
+  </p>
+</div>
 
-## Overview
+<div align="center"><h1>Overview</h1></div>
 
-This project implements a Minimum Viable Product (MVP) for the UMHackathon 2025 Quantitative Trading challenge (Domain 2 by Balaena Quant). It aims to create a Machine Learning model, specifically utilizing Hidden Markov Models (HMMs), to generate an alpha trading strategy based on on-chain cryptocurrency data (from CryptoQuant, Glassnode, Coinglass via the cybotrade.rs API).
+**libQT** is a user-friendly Python framework for developing, backtesting, and evaluating quantitative trading strategies using Hidden Markov Models (HMMs). Designed for UMHackathon 2025 (Domain 2 by Balaena Quant), it streamlines the process of using on-chain cryptocurrency data (from CryptoQuant, Glassnode, Coinglass via the cybotrade.rs API) to generate and test alpha trading strategies.
 
-The project consists of two main Python scripts:
-1.  `download_data.py`: Fetches required data using the cybotrade.rs API and saves it locally.
-2.  `main_strategy.py`: Loads the downloaded data, trains an HMM model, simulates a spot trading strategy, and evaluates its performance.
+The workflow automates:
+1. **Data Acquisition**: Fetches metrics using the cybotrade.rs API (`download_data.py`).
+2. **Feature Engineering**: Calculates features based on `config.yaml`, focusing on on-chain and market data.
+3. **Feature Selection**: Applies correlation analysis to remove redundant features.
+4. **Model Training**: Selects the optimal number of HMM states (AIC/BIC) and trains the model.
+5. **Signal Generation**: Maps HMM states to trading signals (Buy/Sell/Hold), with optional Bayesian optimization.
+6. **Backtesting & Forward Testing**: Simulates strategy performance on historical and unseen data, including trading fees.
+7. **Statistical Validation**: Runs T-tests, permutation tests, and state stability checks to assess robustness.
+8. **Evaluation & Reporting**: Outputs performance metrics, plots, and saves artifacts for analysis.
+
+<hr>
 
 ## Project Structure
 
 ```
-.
-├── config.yaml           # Configuration file for all settings
-├── download_data.py      # Script to download data from API
-├── main_strategy.py      # Script for ML model, backtesting, and evaluation
-├── data/                 # Directory to store downloaded data (created automatically if needed)
-└── README.md             # This file
+config.yaml
+README.md
+requirements.txt
+download_data.py
+generate_signal_maps.py
+main_strategy.py
+data/
+outputs/
 ```
 
 ## Requirements
 
-* Python 3.7+
-* Required Python libraries:
-    * `requests`
-    * `pandas`
-    * `PyYAML`
-    * `NumPy`
-    * `hmmlearn`
-    * `scikit-learn` (used implicitly by hmmlearn, explicitly for potential future enhancements)
+- Python 3.8+
+- Install dependencies:
 
-### Package Installation
-
-1. Create and activate a virtual environment:
-
-   **Linux/macOS**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   ```
-
-   **Windows**:
-   ```cmd
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-
-2. Install required packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-> Note: To deactivate the virtual environment when you're done, simply run `deactivate`
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
 ## Setup
 
-1. **Clone/Download**: Get the project files (download_data.py, main_strategy.py, config.yaml, README.md).
-2. **Install Dependencies**: Run the pip install command above in your terminal.
-3. **API Key**: This project requires an API key from cybotrade.rs to download data.
-   - Obtain your API key from the provider.
-   - Set Environment Variable: You must set your API key as an environment variable named `CYBOTRADE_API_KEY`. Do not hardcode the key in the scripts.
-
-   **Linux/macOS**:
+1. **API Key**: Set your cybotrade.rs API key as an environment variable named `CYBOTRADE_API_KEY`.
    ```bash
    export CYBOTRADE_API_KEY='YOUR_API_KEY_HERE'
-   # Add this line to your .bashrc or .zshrc for persistence
    ```
+2. **Data Directory**: The `data/` and `outputs/` folders are created automatically.
 
-   **Windows (Command Prompt)**:
-   ```cmd
-   set CYBOTRADE_API_KEY=YOUR_API_KEY_HERE
-   ```
+## Configuration (`config.yaml`)
 
-   **Windows (PowerShell)**:
-   ```powershell
-   $env:CYBOTRADE_API_KEY = 'YOUR_API_KEY_HERE'
-   ```
-   > Note: You might need to set this in system environment variables for persistence.
+- `data_directory / output_base_dir`: Paths for data and results.
+- `page_limit`: pagination limit, min 1000, max 4500, refer API docs
+- `data_timeframe`: Options: "daily", "hourly", used for calculate_performance for Sharpe Ratio
+- `metrics_to_download`: API endpoints for data fetching.
+- `backtest_start_time_ms / forward_test_end_time_ms`: Time ranges for data in Unix timestamp
+- `data_files`: Mapping keys to downloaded filenames.
+- `permutation_test_runs`: Number of runs for the permutation test.
+- `feature_corr_threshold`: Threshold for dropping highly correlated features.
+- `features`: List of features to consider for engineering and selection.
+- `hmm_settings`: Parameters for HMM training, including state selection.
+- `trading_fee_percent`: Trading fees.
+- `signal_map`: Maps HMM states (0, 1, ...) to signals (1=Buy, -1=Sell, 0=Hold). Update after analyzing HMM state characteristics.
 
-4. **Create Data Directory**: Although the script attempts to create it, you can manually create the data directory:
-   ```bash
-   mkdir data
-   ```
+## Running the Workflow
 
-## Configuration (config.yaml)
-
-All settings for both data downloading and the ML strategy are controlled via the `config.yaml` file. Before running the scripts, review and customize this file:
-
-- **data_directory**: Specifies the folder for data storage (default: `data`).
-- **metrics_to_download**: Define which metrics and candle data to fetch from the API. Use the format specified in the comments (e.g., `cryptoquant: ["btc/market-data/..."]`). Refer to the cybotrade.rs documentation for available endpoints/topics.
-- **\*_start_time_ms / \*_end_time_ms**: Set the desired time ranges (in Unix milliseconds) for backtesting and forward testing data downloads.
-- **data_files**: Maps internal keys (used in main_strategy.py) to the base filenames generated by download_data.py.
-- **features**: List of column names to be used for training the HMM model.
-- **hmm_settings**: Configure the number of HMM states, covariance type, and iterations.
-- **trading_strategy_settings**: Set the trading fee and map HMM states to trading signals (0=Hold, 1=Buy, -1=Sell).
-- **run_mode**: Set to `backtest` to train the model and test on the backtest period, or `forwardtest` to run a pre-trained model.
-
-## Running the Scripts
-
-### Step 1: Download Data
-
-Run the data downloader script first:
+### 1. Download Data
 
 ```bash
 python download_data.py --config config.yaml
 ```
 
-> Note: Depending on the amount of data requested, this step can take a significant amount of time and API calls.
-
-### Step 2: Run Backtest
-
-Ensure `run_mode: backtest` is set in your config.yaml. Then run:
+### 2. Run Strategy Development & Evaluation
 
 ```bash
 python main_strategy.py --config config.yaml
 ```
 
-This script will:
-- Load data from the CSV files
-- Preprocess the data and engineer features
-- Train the HMM model on the backtest period data
-- Predict hidden states
-- Generate trading signals
-- Run the backtest simulation applying fees
-- Calculate and print performance metrics
+This will:
+- Load and preprocess data
+- Engineer and select features
+- Train and select HMM model
+- Predict states and generate signals
+- Run backtest and forward test
+- Perform statistical validation
+- Save results to `outputs/`
 
-### Step 3: Run Forward Test
+**Iterate:**
+- Analyze HMM state characteristics in the output
+- Update `signal_map` in `config.yaml` based on your interpretation
+- Re-run `main_strategy.py`
+- Optionally, enable Bayesian optimization for automated signal map search
 
-1. Ensure forward test data exists from Step 1
-2. Implement model saving/loading in main_strategy.py
-3. Change `run_mode: forwardtest` in config.yaml
-4. Run:
-   ```bash
-   python main_strategy.py --config config.yaml
-   ```
+## Statistical Validation Methods
 
-## Customization & Potential Improvements
+- **AIC/BIC for Model Selection**: Using a range of states, calculates HMM complexity and picks the most suitable one
+- **Correlation Analysis**: Removes redundant features.
+- **State Stability Check**: Ensures HMM states are stable during backtest periods when splitted
+- **T-Test on Returns**: Checks if strategy returns are statistically significant.
+- **Permutation Testing**: Compares strategy performance to random signal shuffles.
 
-- **Feature Engineering**: Experiment with different features derived from the base metrics in main_strategy.py.
-- **HMM Tuning**: Adjust the number of states, covariance type, and iterations in config.yaml. Explore different HMM initialization parameters.
-- **Signal Logic**: Refine the mapping between HMM states and trading signals in config.yaml. Implement more sophisticated signal logic (e.g., avoid consecutive signals, use state probabilities).
-- **Error Handling**: Add more robust error handling, especially in the data download script (e.g., retries for API calls).
-- **Model Persistence**: Fully implement model saving and loading using joblib or pickle for proper forward testing.
-- **Data Validation**: Add checks for data quality and consistency after loading.
-- **Visualization**: Add code to plot equity curves, drawdowns, or feature distributions.
+## Signal Mapping & Optimization
 
-## Sources and Related Content
+- **Manual Mapping**: Assign 1 (Buy), -1 (Sell), or 0 (Hold) to each HMM state after reviewing state characteristics in the `config.yaml` file.
 
-Refer to the cybotrade.rs documentation for API details and additional resources.
+- **Bayesian Optimization**: Use the `generate_signal_maps.py` script to automatically search for optimal signal mappings:
+  ```bash
+  python generate_signal_maps.py \
+    --run_dir outputs/run_YYYYMMDD_HHMMSS \  # Path to the run output directory
+    --states N \                             # Number of HMM states (e.g., 8)
+    --config config.yaml \                   # Base config (for fee)
+    --n_calls 1000 \                        # Number of optimization iterations
+    --patience 100 \                        # Early stopping patience
+    --optimize_metric total_return          # Metric to optimize (total_return or sharpe)
+  ```
+
+  The script will:
+  - Load model artifacts from the specified run directory
+  - Use Bayesian optimization to search for the best signal map
+  - Display both backtest and forward test performance for the best map found
+  - Early stop if no improvement is seen after `patience` iterations
+
+  Note: Run `main_strategy.py` first to generate the necessary artifacts.
+
+## Challenges & Solutions
+
+1. **Data Quality & Availability**
+   - **Issue**: Missing data points and inconsistent timestamps across different API endpoints
+   - **Solution**: Implemented robust data alignment and forward/backward filling strategies
+
+2. **HMM State Interpretation**
+   - **Issue**: HMM states can be abstract and difficult to interpret
+   - **Solution**: Added detailed state characteristic analysis in outputs, showing mean feature values per state
+
+3. **Performance Validation**
+   - **Issue**: Risk of overfitting when manually creating signal maps
+   - **Solution**: Implemented multiple validation methods (permutation tests, state stability checks)
+
+4. **Known Limitations**
+   - Permutation tests currently only support daily timeframes
+   - Bayesian optimization can be time-consuming for large numbers of states
+   - State stability might vary significantly in highly volatile market conditions
+
+5. **Technical Challenges**
+   - **Issue**: Memory usage with large datasets and multiple permutation runs
+   - **Solution**: Implemented efficient data structures and optional early stopping
+
+6. **API Rate Limits**
+   - **Issue**: cybotrade.rs API has request limits
+   - **Solution**: Added pagination handling and request delays in `download_data.py`
+
+## Improvements & Extensions
+
+- Add advanced features or alternative models
+- Adapt for different timeframes (Permutation tests still doesnt do that, only works for daily)
+- Implement risk management (position sizing, stop-loss)
+- Expand Bayesian optimization to tune more parameters
+
+## References
+- [cybotrade.rs API documentation](https://cybotrade.rs)
+- Hidden Markov Models in Quantitative Finance
+- On-chain analytics resources
+
+---
+
+*libQT is developed for educational and research purposes. Use at your own risk.*

@@ -4,6 +4,9 @@
 data_directory: "data"
 page_limit: 1000
 
+# Options: "daily", "hourly"
+data_timeframe: "hourly"
+
 # --- Data Download Settings (Used by download_data.py) ---
 # API key is read from environment variable CYBOTRADE_API_KEY
 

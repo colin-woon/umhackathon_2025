@@ -11,6 +11,7 @@ import seaborn as sns          # For heatmap
 from datetime import datetime  # For timestamped output directory
 import shutil                 # For copying config file
 from scipy.stats import ttest_1samp
+from scipy.stats import percentileofscore # For empirical p-value
 
 # --- Configuration Loading ---
 def load_config(config_path='config.yaml'):
@@ -509,12 +510,12 @@ def generate_signals(df_with_state, signal_map): # Takes DataFrame with 'state' 
     return df
 
 # --- Backtesting (Modified for Cumulative PnL) ---
-def run_backtest(df, fee_percent, start_value=1000.0):
+def run_backtest(df, fee_percent, start_value=1000.0, verbose=True):
     """
     Runs the backtest simulation, calculates PnL, strategy equity,
     Buy & Hold equity, and Cumulative PnL.
     """
-    print("Running backtest...")
+    if verbose: print("Running backtest...")
     if 'close' not in df.columns or 'signal' not in df.columns:
          print("Error: DataFrame missing 'close' or 'signal' column for backtest.")
          return None
@@ -543,7 +544,7 @@ def run_backtest(df, fee_percent, start_value=1000.0):
     df_backtest['buy_and_hold_relative'] = (1 + df_backtest['asset_return']).cumprod()
     df_backtest['buy_and_hold_portfolio_value'] = start_value * df_backtest['buy_and_hold_relative']
 
-    print("Backtest finished.")
+    if verbose: print("Backtest finished.")
     return df_backtest
 
 # --- Performance Metrics (Adapted for Portfolio Value) ---
@@ -1100,7 +1101,7 @@ def plot_equity_curves(results_bt, results_ft, output_path, start_value=1000.0):
 
 # --- Need to modify save_run_summary function signature ---
 def save_run_summary(config, performance_bt, performance_ft, stability_results, output_dir,
-                      performance_shuffled_bt=None, performance_shuffled_ft=None): # Added optional args
+                      perm_summary_bt=None, perm_summary_ft=None): # Renamed optional args
     """Saves config and performance summaries to a YAML file in the output dir."""
     print(f"\n--- Saving Run Summary to '{output_dir}/' ---")
     summary_data = {
@@ -1110,11 +1111,10 @@ def save_run_summary(config, performance_bt, performance_ft, stability_results, 
         'performance_forwardtest': performance_ft,
         'state_stability': stability_results
     }
-    # Add shuffled results if they exist
-    if performance_shuffled_bt:
-        summary_data['performance_backtest_shuffled_signals'] = performance_shuffled_bt
-    if performance_shuffled_ft:
-        summary_data['performance_forwardtest_shuffled_signals'] = performance_shuffled_ft
+    if perm_summary_bt:
+        summary_data['permutation_test_backtest'] = perm_summary_bt
+    if perm_summary_ft:
+        summary_data['permutation_test_forwardtest'] = perm_summary_ft
 
     summary_path = os.path.join(output_dir, 'run_summary.yaml')
     # ... (rest of saving logic: write YAML, copy config) ...
@@ -1230,40 +1230,99 @@ def plot_pnl_vs_price(results_bt, results_ft, output_path):
         print(f"Error saving Cumulative PnL vs Price plot: {e}")
     plt.close(fig) # Close the figure
 
-# Add this function definition somewhere before the main block
-def run_shuffled_signal_test(df_signals, config, period_label="Shuffled"):
+def run_permutation_test(df_signals_original, config, period_label="Permutation"):
     """
-    Runs a backtest using randomly shuffled signals to test timing significance.
+    Runs multiple backtests with randomly shuffled signals to generate a
+    null distribution of performance metrics.
 
     Args:
-        df_signals (pd.DataFrame): DataFrame containing 'close', 'signal' etc.
-                                   BEFORE running the main backtest simulation.
+        df_signals_original (pd.DataFrame): DataFrame containing 'close', 'signal', etc.
+                                           from the *actual* strategy run.
         config (dict): Configuration dictionary.
-        period_label (str): Label for printing output.
+        period_label (str): Label for printing output (e.g., "Backtest Permutation").
 
     Returns:
-        dict: Performance summary of the shuffled run, or None if error.
+        dict: Summary statistics of the permutation test results (mean, std, percentiles, p-value),
+              or None if the test is disabled or fails.
     """
-    print(f"\n--- Running {period_label} Signal Test ---")
-    if df_signals is None or 'signal' not in df_signals.columns:
-        print(f"Cannot run {period_label} test: Invalid input DataFrame.")
+    num_runs = config['permutation_test_runs']
+    if num_runs <= 0:
+        print(f"\n--- Permutation Test ({period_label}) Disabled (runs <= 0) ---")
         return None
 
-    df_shuffled = df_signals.copy()
-    # Shuffle the signals randomly
-    df_shuffled['signal'] = np.random.permutation(df_shuffled['signal'].values)
-    print("Signals shuffled randomly.")
+    print(f"\n--- Running Permutation Test ({period_label}, {num_runs} runs) ---")
+    if df_signals_original is None or 'signal' not in df_signals_original.columns:
+        print(f"Cannot run permutation test: Invalid input DataFrame.")
+        return None
 
-    # Run backtest and calculate performance on shuffled signals
-    results_shuffled = run_backtest(df_shuffled, config['trading_fee_percent']) # Assumes start_value=1000 default
-    if results_shuffled is None:
-        print(f"Backtest failed for {period_label} signals.")
-        return {"Error": f"{period_label} backtest failed"}
+    original_signals = df_signals_original['signal'].values
+    shuffled_results_list = [] # To store key metrics from each run
 
-    print(f"\n--- {period_label.upper()} SIGNAL PERFORMANCE ---")
-    performance_shuffled = calculate_performance(results_shuffled, config['trading_fee_percent'])
+    for i in range(num_runs):
+        if (i + 1) % 10 == 0: # Print progress indicator
+             print(f"  Running permutation {i+1}/{num_runs}...")
 
-    return performance_shuffled
+        df_shuffled = df_signals_original.copy()
+        # Shuffle the signals randomly for this iteration
+        df_shuffled['signal'] = np.random.permutation(original_signals)
+
+        # Run backtest and calculate performance on shuffled signals
+        results_shuffled = run_backtest(df_shuffled, config['trading_fee_percent'], verbose=False)
+        if results_shuffled is None:
+            print(f"Warning: Backtest failed for permutation {i+1}. Skipping.")
+            continue
+
+        # Use a minimal version of calculate_performance or extract needed metrics
+        # to avoid excessive printing inside the loop
+        net_returns_shuffled = results_shuffled['strategy_return_net'].fillna(0)
+
+        # Calculate Sharpe (Example - add others if needed)
+        if isinstance(results_shuffled.index, pd.DatetimeIndex) and len(results_shuffled.index) > 1:
+             time_diff = results_shuffled.index.to_series().diff().median()
+             periods_per_year = pd.Timedelta(days=365) / time_diff if time_diff and time_diff.total_seconds() > 0 else 252
+        else: periods_per_year = 252
+        mean_ret = net_returns_shuffled.mean()
+        std_dev = net_returns_shuffled.std()
+        sharpe = (mean_ret * periods_per_year) / (std_dev * np.sqrt(periods_per_year)) if std_dev != 0 and periods_per_year > 0 else 0
+
+        # Store relevant metrics
+        shuffled_results_list.append({'Sharpe': sharpe}) # Add 'Total Return %', etc. if needed
+
+    if not shuffled_results_list:
+        print("Permutation test failed: No successful runs.")
+        return None
+
+    # Process the collected results
+    df_shuffled_summary = pd.DataFrame(shuffled_results_list)
+    summary_stats = {
+        'num_runs': num_runs,
+        'mean_sharpe': df_shuffled_summary['Sharpe'].mean(),
+        'median_sharpe': df_shuffled_summary['Sharpe'].median(),
+        'std_dev_sharpe': df_shuffled_summary['Sharpe'].std(),
+        'sharpe_percentiles': {
+            '5th': df_shuffled_summary['Sharpe'].quantile(0.05),
+            '25th': df_shuffled_summary['Sharpe'].quantile(0.25),
+            '75th': df_shuffled_summary['Sharpe'].quantile(0.75),
+            '95th': df_shuffled_summary['Sharpe'].quantile(0.95)
+        }
+        # Add stats for other metrics if collected
+    }
+
+    print(f"--- Permutation Test ({period_label}) Summary ---")
+    print(f"  Mean Shuffled Sharpe: {summary_stats['mean_sharpe']:.4f}")
+    print(f"  Median Shuffled Sharpe: {summary_stats['median_sharpe']:.4f}")
+    print(f"  Std Dev Shuffled Sharpe: {summary_stats['std_dev_sharpe']:.4f}")
+    print(f"  95th Percentile Shuffled Sharpe: {summary_stats['sharpe_percentiles']['95th']:.4f}")
+    print("---------------------------------------------")
+
+    # Optional: Save full distribution for analysis
+    # perm_dist_path = os.path.join(os.path.dirname(config.get('__source_path__', '.')), # Save near config or in output dir
+    #                              f'{period_label.lower()}_permutation_sharpe_dist.csv')
+    # df_shuffled_summary.to_csv(perm_dist_path, index=False)
+    # print(f"Saved full permutation Sharpe distribution to {perm_dist_path}")
+
+
+    return summary_stats
 
 # --- Main Execution (Including Plotting and Saving) ---
 if __name__ == "__main__":
@@ -1389,17 +1448,16 @@ if __name__ == "__main__":
     # Handle potential failure
     if performance_ft is None: performance_ft = {"Error": "Forward test execution failed"}
 
-    # --- Run SHUFFLED Signal Tests (Optional) ---
-    # We need the dataframes that have the original signals *before* backtest calcs overwrite things,
-    # or we need to re-generate signals on the feature dataframes.
-    # Let's assume run_and_evaluate_test_period internally calls generate_signals and returns df_results
-    # which still contains the original 'signal' column alongside results. Check function definitions.
-    # If run_and_evaluate_test_period returns df_results with the original signals:
+    # --- Run PERMUTATION Tests (Controlled by Config) ---
+    # We need the dataframes containing the original 'signal' column
+    # Let's assume run_and_evaluate_test_period returns df_results which contains signals
+    perm_summary_bt = None
+    perm_summary_ft = None
     if results_bt is not None:
-         performance_shuffled_bt = run_shuffled_signal_test(results_bt, config, period_label="Backtest Shuffled")
+         perm_summary_bt = run_permutation_test(results_bt, config, period_label="Backtest")
     if results_ft is not None:
-         performance_shuffled_ft = run_shuffled_signal_test(results_ft, config, period_label="Forward Test Shuffled")
-    # ---- End Shuffled ----
+         perm_summary_ft = run_permutation_test(results_ft, config, period_label="Forward Test")
+    # ---- End Permutation ----
 
     # --- Plot Cumulative PnL vs Price --- ## <<<< MODIFIED CALL >>>>
     pnl_plot_path = os.path.join(run_output_dir, 'cumulative_pnl_vs_price.png')
@@ -1415,7 +1473,7 @@ if __name__ == "__main__":
     # --- Save Run Summary ---
     # <<<< CALL NEW FUNCTION >>>>
     save_run_summary(config, performance_bt, performance_ft, stability_results, run_output_dir,
-                      performance_shuffled_bt, performance_shuffled_ft)
+                      perm_summary_bt, perm_summary_ft)
 
     print(f"\n--- Strategy execution finished ---")
     print(f"Outputs saved in: {run_output_dir}")

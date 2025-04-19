@@ -87,6 +87,7 @@ data_files:
 # Features to use for HMM model training (Candidate Pool based on Research)
 # Note: Some features (e.g., TAAR, Perp_Spot_Gap) may require additional data sources or calculations not explicitly listed in your initial dataset configuration.
 # Parameter values (e.g., 7d, 14d, 90d, k) are suggestions and should be optimized during model development.
+permutation_test_runs: 100
 feature_corr_threshold: 0.95
 features:
   # --- Price-based Features (Bybit Candle Data) ---

@@ -301,6 +301,140 @@ def engineer_features(df, final_column_names, config_features): # config_feature
 
     return df_final_feat
 
+
+def generate_full_eda_heatmap(df_raw, final_column_names, full_feature_list_from_config, run_output_dir):
+    """
+    Calculates as many features as possible from the full config list
+    and plots their correlation heatmap for EDA purposes.
+    This function is separate from the main pipeline's feature engineering.
+    """
+    print("\n--- Generating Full EDA Heatmap ---")
+    if df_raw is None or df_raw.empty:
+        print("Error: Cannot generate EDA heatmap, raw data is empty.")
+        return
+
+    df_eda = df_raw.copy() # Start with raw data
+
+    # --- Re-calculate Features from the FULL list ---
+    # (This will be a simplified version, add more calcs as needed/possible)
+    # You'll need to copy/adapt logic from your research list or engineer_features
+    # for ALL the features you want in the EDA heatmap.
+
+    print(f"Base columns for EDA: {df_eda.columns.tolist()}")
+
+    close_col = 'close'
+    volume_col = 'volume'
+    funding_col = final_column_names.get('cryptoquant_funding')
+    active_col = final_column_names.get('glassnode_active')
+    tx_col = final_column_names.get('glassnode_tx')
+    inflow_col = final_column_names.get('cryptoquant_inflow')
+    oi_col = final_column_names.get('coinglass_oi')
+    lsr_col = final_column_names.get('coinglass_lsr')
+    open_col = 'open' # Assuming 'open' exists in df_raw for body_ratio
+    high_col = 'high' # Assuming 'high' exists
+    low_col = 'low'   # Assuming 'low' exists
+
+    # --- PRICE ---
+    if close_col in df_eda.columns:
+        df_eda['price_return'] = df_eda[close_col].pct_change()
+        if high_col in df_eda.columns and low_col in df_eda.columns:
+             df_eda['price_range_ratio_ohlc'] = (df_eda[high_col] - df_eda[low_col]) / df_eda[close_col].replace(0, np.nan)
+        if open_col in df_eda.columns:
+             df_eda['price_body_ratio_ohlc'] = (df_eda[close_col] - df_eda[open_col]).abs() / df_eda[close_col].replace(0, np.nan)
+    df_eda['volatility_10d'] = df_eda['price_return'].rolling(window=10).std()
+
+    # --- FUNDING ---
+    if funding_col and funding_col in df_eda.columns:
+        df_eda['cryptoquant_funding_rate'] = df_eda[funding_col] # Keep raw
+        df_eda['funding_rate_change_1d'] = df_eda[funding_col].diff()
+        df_eda['funding_rate_MA_7d'] = df_eda[funding_col].rolling(window=7).mean()
+        # Basic percentile/flag (copy from engineer_features)
+        rolling_window_90d = 90
+        lower_bound = df_eda[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.05)
+        upper_bound = df_eda[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.95)
+        df_eda['funding_rate_extreme_flag'] = ((df_eda[funding_col] < lower_bound) | (df_eda[funding_col] > upper_bound)).astype(int)
+        # Add more funding features here if desired for EDA plot...
+
+    # --- ACTIVE ADDR ---
+    if active_col and active_col in df_eda.columns:
+        df_eda['glassnode_active_addr_value'] = df_eda[active_col] # Keep raw
+        df_eda['active_addr_roc_14d'] = df_eda[active_col].pct_change(periods=14)
+        # Add more active addr features here...
+
+    # --- TX COUNT ---
+    if tx_col and tx_col in df_eda.columns:
+        df_eda['glassnode_tx_count_value'] = df_eda[tx_col] # Keep raw
+        df_eda['tx_count_roc_14d'] = df_eda[tx_col].pct_change(periods=14)
+
+     # --- COMBINED/RATIO ---
+    if active_col and tx_col and active_col in df_eda.columns and tx_col in df_eda.columns:
+        denominator = pd.to_numeric(df_eda[tx_col], errors='coerce').replace(0, np.nan)
+        numerator = pd.to_numeric(df_eda[active_col], errors='coerce')
+        df_eda['active_addr_tx_ratio'] = (numerator / denominator)
+        # Add inflow_active_addr_ratio_7d etc. if needed
+
+    # --- INFLOW ---
+    if inflow_col and inflow_col in df_eda.columns:
+        df_eda['cryptoquant_inflow_value'] = df_eda[inflow_col] # Keep raw
+        if volume_col in df_eda.columns:
+            denominator = pd.to_numeric(df_eda[volume_col], errors='coerce').replace(0, np.nan)
+            numerator = pd.to_numeric(df_eda[inflow_col], errors='coerce')
+            df_eda['inflow_vol_ratio'] = (numerator / denominator) # Already calculated, maybe keep
+        # Add inflow spike flag etc.
+
+    # --- OI ---
+    if oi_col and oi_col in df_eda.columns:
+        df_eda['coinglass_oi_value'] = df_eda[oi_col] # Keep raw
+        df_eda['oi_roc_7d'] = df_eda[oi_col].pct_change(periods=7)
+        # Add other OI features...
+
+    # --- LSR ---
+    if lsr_col and lsr_col in df_eda.columns:
+        df_eda['coinglass_lsr_value'] = df_eda[lsr_col] # Keep raw
+        df_eda['lsr_MA_7d'] = df_eda[lsr_col].rolling(window=7).mean()
+        # Basic Z-score/flag (copy from engineer_features)
+        rolling_window_90d_lsr = 90
+        lsr_series = pd.to_numeric(df_eda[lsr_col], errors='coerce')
+        rolling_mean = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).mean()
+        rolling_std = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).std()
+        df_eda['lsr_zscore_90d'] = (lsr_series - rolling_mean) / rolling_std.replace(0, np.nan)
+        z_threshold = 2.0
+        df_eda['lsr_extreme_flag'] = ((df_eda['lsr_zscore_90d'] > z_threshold) | (df_eda['lsr_zscore_90d'] < -z_threshold)).astype(int)
+        # Add more LSR features...
+
+    # --- INTERACTIONS ---
+    # Calculate oi_change_1d if needed for interaction
+    if oi_col in df_eda.columns and 'oi_change_1d' not in df_eda.columns:
+         df_eda['oi_change_1d'] = df_eda[oi_col].pct_change(periods=1)
+    if 'oi_change_1d' in df_eda.columns and 'price_return' in df_eda.columns:
+         df_eda['oi_change_x_price_change'] = df_eda['oi_change_1d'] * df_eda['price_return']
+     # Add funding_rate_x_oi_change if needed
+
+
+    # --- Final Cleanup for EDA ---
+    df_eda.fillna(method='ffill', inplace=True)
+    df_eda.fillna(method='bfill', inplace=True)
+    df_eda.fillna(0, inplace=True)
+    df_eda.replace([np.inf, -np.inf], 0, inplace=True)
+
+    # --- Select ONLY features from the FULL config list that were successfully calculated ---
+    eda_features_present = [f for f in full_feature_list_from_config if f in df_eda.columns]
+    print(f"Features calculated for EDA heatmap: {eda_features_present}")
+
+    if not eda_features_present:
+        print("No features available for EDA heatmap.")
+        return
+
+    numeric_eda_df = df_eda[eda_features_present].select_dtypes(include=np.number)
+    if numeric_eda_df.empty:
+        print("No numeric features available for EDA heatmap.")
+        return
+
+    # --- Calculate and Plot ---
+    correlation_matrix_eda = numeric_eda_df.corr()
+    heatmap_path = os.path.join(run_output_dir, 'correlation_heatmap_FULL_EDA.png') # Use distinct name
+    plot_correlation_heatmap(correlation_matrix_eda, numeric_eda_df.columns.tolist(), heatmap_path)
+
 # --- HMM Model (Modified for Scaled Data & Reduced Verbosity) ---
 def train_hmm(X_scaled, n_states, covariance_type, n_iter): # Takes X_scaled directly
     """Trains the Gaussian HMM model on pre-scaled data with reduced output."""
@@ -788,11 +922,6 @@ def run_and_evaluate_test_period(df_features, states, config, period_label="Test
     print(f"\n--- FINAL {period_label.upper()} PERFORMANCE ---")
     performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
 
-    # Optional: Save results
-    # file_name = f'final_{period_label.lower()}_results.csv'
-    # df_results.to_csv(os.path.join(config.get('data_directory', 'data'), file_name))
-    # print(f"Saved {period_label} results to {file_name}")
-
     return df_results, performance_summary
 
 # --- Plotting Functions ---
@@ -915,6 +1044,16 @@ if __name__ == "__main__":
     if df_raw_backtest is None or df_raw_backtest.empty: exit("Error: Could not load backtest data.")
     if df_raw_forwardtest is None or df_raw_forwardtest.empty: exit("Error: Could not load forward test data.")
 
+    # --- Generate FULL EDA Heatmap (using raw data and full config list) ---
+    # <<<< NEW CALL >>>>
+    full_feature_list_for_eda = config.get('features', []) # Get the full list from config
+    generate_full_eda_heatmap(
+        df_raw_backtest, # Use raw backtest data as base
+        final_column_names,
+        full_feature_list_for_eda, # Pass the full list
+        run_output_dir
+    )
+    # <<<< END NEW CALL >>>>
 
     # --- Feature Engineering ---
     # ... (keep existing feature engineering logic) ...
@@ -929,17 +1068,12 @@ if __name__ == "__main__":
 
     # --- Feature Selection & Correlation Plot ---
     features_available = [f for f in feature_list_from_config if f in df_features_backtest.columns]
-    corr_threshold = config.get('feature_corr_threshold', 0.95)
+    corr_threshold = config['feature_corr_threshold']
     # ---- MODIFIED CALL ----
     feature_list, corr_matrix, corr_feature_names = select_features_by_correlation(
         df_features_backtest, features_available, corr_threshold
     )
     if not feature_list: exit("Error: Feature selection removed all features.")
-    # ---- PLOT CORRELATION ----
-    if corr_matrix is not None:
-        heatmap_path = os.path.join(run_output_dir, 'correlation_heatmap.png')
-        plot_correlation_heatmap(corr_matrix, corr_feature_names, heatmap_path)
-
 
     # --- Prepare Feature Arrays ---
     X_backtest, X_forwardtest = prepare_feature_arrays(df_features_backtest, df_features_forwardtest, feature_list)
@@ -975,7 +1109,7 @@ if __name__ == "__main__":
 
 
     # --- State Stability Check ---
-    stability_threshold = config.get('state_stability_threshold', 20)
+    stability_threshold = config['state_stability_threshold']
     stability_comparison_df, max_diff, model_is_stable = perform_state_stability_check(
         states_backtest, states_forwardtest, stability_threshold
     )

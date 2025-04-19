@@ -86,50 +86,51 @@ data_files:
 # Features to use for HMM model training (Candidate Pool based on Research)
 # Note: Some features (e.g., TAAR, Perp_Spot_Gap) may require additional data sources or calculations not explicitly listed in your initial dataset configuration.
 # Parameter values (e.g., 7d, 14d, 90d, k) are suggestions and should be optimized during model development.
+feature_corr_threshold: 0.95
 features:
   # --- Price-based Features (Bybit Candle Data) ---
   - "price_return"                 # Daily return (kept from original)
   - "volatility_10d"               # 10-day volatility (kept from original)
-  # - "price_range_ratio_ohlc"       # (High - Low) / Close from candle data [1]
-  # - "price_body_ratio_ohlc"        # abs(Close - Open) / Close from candle data [1]
+  - "price_range_ratio_ohlc"       # (High - Low) / Close from candle data [1]
+  - "price_body_ratio_ohlc"        # abs(Close - Open) / Close from candle data [1]
   # --- Funding Rate based Features (CryptoQuant - Binance) ---
-  # - "cryptoquant_funding_rate"     # Raw daily funding rate (kept from original) [2]
+  - "cryptoquant_funding_rate"     # Raw daily funding rate (kept from original) [2]
   - "funding_rate_change_1d"       # Daily change in funding rate (kept from original) [2]
-  # - "funding_rate_MA_7d"           # 7-day Moving Average of funding rate [3, 4]
-  # - "funding_rate_percentile_90d"  # 90-day rolling percentile rank of funding rate
+  - "funding_rate_MA_7d"           # 7-day Moving Average of funding rate [3, 4]
+  - "funding_rate_percentile_90d"  # 90-day rolling percentile rank of funding rate
   - "funding_rate_extreme_flag"    # Binary: 1 if percentile > 95% or < 5%, else 0
-  # - "funding_rate_sign_change_flag" # Binary: 1 if funding rate sign flipped from previous day
-  # - "funding_rate_vol_adjusted"    # Funding Rate / Price Volatility (e.g., ATR) [User Query 7]
+  - "funding_rate_sign_change_flag" # Binary: 1 if funding rate sign flipped from previous day
+  - "funding_rate_vol_adjusted"    # Funding Rate / Price Volatility (e.g., ATR) [User Query 7]
   # --- Active Addresses based Features (Glassnode) ---
-  # - "glassnode_active_addr_value"  # Raw daily active addresses (renamed from original) [5, 6]
+  - "glassnode_active_addr_value"  # Raw daily active addresses (renamed from original) [5, 6]
   - "active_addr_roc_14d"          # 14-day Rate of Change of active addresses [7, 8]
-  # - "active_addr_momentum_30d_365d" # SMA(ActiveAddr, 30) / SMA(ActiveAddr, 365) [7, 9, 10]
+  - "active_addr_momentum_30d_365d" # SMA(ActiveAddr, 30) / SMA(ActiveAddr, 365) [7, 9, 10]
   # --- Transaction Count based Features (Glassnode) ---
-  # - "glassnode_tx_count_value"     # Raw daily transaction count (renamed from original) [6, 11]
-  # - "tx_count_roc_14d"             # 14-day Rate of Change of transaction count
+  - "glassnode_tx_count_value"     # Raw daily transaction count (renamed from original) [6, 11]
+  - "tx_count_roc_14d"             # 14-day Rate of Change of transaction count
   # --- Combined/Ratio Features ---
-  # - "inflow_active_addr_ratio_7d"  # SMA(Binance Inflow, 7) / SMA(Active Addresses, 7) [12]
-  # - "taar_30d"                     # Transaction Amount to Active Addresses Ratio (Requires Adjusted Tx Volume) [12]
-  # - "exchange_whale_ratio_7d"      # SMA(Top10 Binance Inflows, 7) / SMA(Total Binance Inflows, 7) [13, 14]
-  # - "perp_spot_gap_ratio"          # (Perp Price - Spot Price) / Spot Price (Requires Spot Index Price) [15, 10]
+  - "inflow_active_addr_ratio_7d"  # SMA(Binance Inflow, 7) / SMA(Active Addresses, 7) [12]
+  - "taar_30d"                     # Transaction Amount to Active Addresses Ratio (Requires Adjusted Tx Volume) [12]
+  - "exchange_whale_ratio_7d"      # SMA(Top10 Binance Inflows, 7) / SMA(Total Binance Inflows, 7) [13, 14]
+  - "perp_spot_gap_ratio"          # (Perp Price - Spot Price) / Spot Price (Requires Spot Index Price) [15, 10]
   # --- Exchange Inflow based Features (CryptoQuant - Binance) ---
-  # - "cryptoquant_inflow_value"     # Raw daily exchange inflow (kept from original) [16, 17]
-  # - "inflow_spike_flag_30d"        # Binary: 1 if inflow > SMA(30d) + k*StdDev(30d), else 0
-  # - "inflow_vol_adjusted"          # Exchange Inflow / Price Volatility (e.g., ATR) [User Query 7]
+  - "cryptoquant_inflow_value"     # Raw daily exchange inflow (kept from original) [16, 17]
+  - "inflow_spike_flag_30d"        # Binary: 1 if inflow > SMA(30d) + k*StdDev(30d), else 0
+  - "inflow_vol_adjusted"          # Exchange Inflow / Price Volatility (e.g., ATR) [User Query 7]
   # --- Open Interest based Features (Coinglass - Binance BTCUSDT) ---
-  # - "coinglass_oi_value"           # Raw daily Open Interest (closing value assumed) (kept from original) [18, 19]
+  - "coinglass_oi_value"           # Raw daily Open Interest (closing value assumed) (kept from original) [18, 19]
   - "oi_roc_7d"                    # 7-day Rate of Change of Open Interest [14, 20]
-  # - "oi_spike_flag"                # Binary: 1 if OI RoC exceeds a predefined threshold
-  # - "oi_range_ratio_ohlc"          # (OI High - OI Low) / OI Close from OI OHLC data [14]
-  # - "oi_net_change_ratio_ohlc"     # (OI Close - OI Open) / OI Open from OI OHLC data [14]
+  - "oi_spike_flag"                # Binary: 1 if OI RoC exceeds a predefined threshold
+  - "oi_range_ratio_ohlc"          # (OI High - OI Low) / OI Close from OI OHLC data [14]
+  - "oi_net_change_ratio_ohlc"     # (OI Close - OI Open) / OI Open from OI OHLC data [14]
   # --- Long/Short Ratio based Features (Coinglass - Binance BTCUSDT) ---
-  # - "coinglass_lsr_value"          # Raw Long/Short Ratio (renamed from original) [21, 22]
-  # - "lsr_MA_7d"                    # 7-day Moving Average of Long/Short Ratio
+  - "coinglass_lsr_value"          # Raw Long/Short Ratio (renamed from original) [21, 22]
+  - "lsr_MA_7d"                    # 7-day Moving Average of Long/Short Ratio
   - "lsr_zscore_90d"               # 90-day rolling Z-score of Long/Short Ratio [User Query 5]
-  # - "lsr_extreme_flag"             # Binary: 1 if Z-score > 2 or < -2 [User Query 5]
+  - "lsr_extreme_flag"             # Binary: 1 if Z-score > 2 or < -2 [User Query 5]
   # --- Interaction Features ---
   - "oi_change_x_price_change"     # OI RoC * Price Return [7, 20]
-  # - "funding_rate_x_oi_change"     # Smoothed Funding Rate * OI RoC
+  - "funding_rate_x_oi_change"     # Smoothed Funding Rate * OI RoC
 
 # HMM Settings
 # Avoid going more than 8 states for HMM, as it can lead to overfitting
@@ -207,25 +208,25 @@ trading_fee_percent: 0.0006
 # Trade Frequency (%): 9.0164
 # Number of Trades: 33.0000
 # ---------------------------
-# signal_map:
-#   0: 0   # Strong negative return, high LSR
-#   1: 1   # Positive return, extreme funding
-#   2: 1   # Positive return, low vol
-#   3: 0  # High vol consolidation
-#   4: 0   # Positive return, very high LSR
-#   5: 0   # Crash / Capitulation
-#   6: 1  # Strong bullish momentum / blow-off
-#   7: -1  # Negative return, low vol
-
 signal_map:
-  0: -1   # Strong negative return, high LSR
+  0: 0   # Strong negative return, high LSR
   1: 1   # Positive return, extreme funding
   2: 1   # Positive return, low vol
   3: 0  # High vol consolidation
   4: 0   # Positive return, very high LSR
-  5: -1   # Crash / Capitulation
+  5: 0   # Crash / Capitulation
   6: 1  # Strong bullish momentum / blow-off
   7: -1  # Negative return, low vol
+
+# signal_map:
+#   0: -1   # Strong negative return, high LSR
+#   1: 1   # Positive return, extreme funding
+#   2: 1   # Positive return, low vol
+#   3: 0  # High vol consolidation
+#   4: 0   # Positive return, very high LSR
+#   5: -1   # Crash / Capitulation
+#   6: 1  # Strong bullish momentum / blow-off
+#   7: -1  # Negative return, low vol
 
 # Backtest/Forward Test Execution Settings
 # Options: "backtest", "forwardtest"

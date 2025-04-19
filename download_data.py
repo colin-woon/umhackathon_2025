@@ -182,7 +182,7 @@ if __name__ == "__main__":
         print("Error: CYBOTRADE_API_KEY environment variable not set.")
         exit(1)
 
-    output_dir = config.get('data_directory', 'data')
+    output_dir = config['data_directory']
     os.makedirs(output_dir, exist_ok=True)
     print(f"Data will be saved in: {output_dir}")
 

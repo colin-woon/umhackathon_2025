@@ -135,6 +135,7 @@ features:
   - "funding_rate_x_oi_change"     # Smoothed Funding Rate * OI RoC
 
 # HMM Settings
+stability_num_backtest_chunks: 3
 # Avoid going more than 8 states for HMM, as it can lead to overfitting
 min_hmm_states: 3
 max_hmm_states: 8

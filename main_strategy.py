@@ -12,6 +12,7 @@ from datetime import datetime  # For timestamped output directory
 import shutil                 # For copying config file
 from scipy.stats import ttest_1samp
 from scipy.stats import percentileofscore # For empirical p-value
+from itertools import combinations # Needed for comparing chunk pairs
 
 # --- Configuration Loading ---
 def load_config(config_path='config.yaml'):
@@ -791,46 +792,79 @@ def select_features_by_correlation(df_features_backtest, features_available, cor
     # Return list, the calculated matrix (not abs), and the names used for the matrix
     return final_feature_list, correlation_matrix, numeric_feature_names
 
-def perform_state_stability_check(states_backtest, states_forwardtest, stability_threshold):
+def perform_within_backtest_stability_check(states_backtest, backtest_index, config):
     """
-    Compares state distributions between backtest and forward test periods.
+    Checks HMM state stability by comparing distributions across chunks
+    within the backtest period.
 
     Args:
-        states_backtest (np.ndarray or pd.Series): Predicted states for the backtest period.
-        states_forwardtest (np.ndarray or pd.Series): Predicted states for the forward test period.
-        stability_threshold (float): Max allowed percentage point difference for stability.
+        states_backtest (np.ndarray): Predicted states for the entire backtest period.
+        backtest_index (pd.DatetimeIndex): The datetime index corresponding to states_backtest.
+        config (dict): Configuration dictionary containing threshold and chunk settings.
 
     Returns:
         tuple: (comparison_df, max_diff, model_is_stable)
-               - comparison_df (pd.DataFrame): DataFrame showing percentage distribution.
-               - max_diff (float): Maximum absolute difference found.
-               - model_is_stable (bool): True if max_diff <= threshold, False otherwise.
-               Returns (None, np.inf, False) if check cannot be performed.
+               - comparison_df (pd.DataFrame or None): DataFrame showing distributions per chunk.
+               - max_diff (float): Max difference found between any two chunks.
+               - model_is_stable (bool): True if max_diff <= threshold.
+               Returns (None, np.inf, False) if check is disabled or fails.
     """
-    print("\n--- State Distribution Comparison ---")
-    model_is_stable = False # Default to not stable
-    max_diff = np.inf
-    comparison_df = None
+    num_chunks = config['stability_num_backtest_chunks']
+    stability_threshold = config.get('state_stability_threshold', 20) # Default threshold
+    model_is_stable = False # Default
+    max_diff = np.inf       # Default
+    comparison_df = None    # Default
 
-    if states_backtest is None or states_forwardtest is None or len(states_backtest) == 0 or len(states_forwardtest) == 0:
-        print("Could not perform state stability check due to missing state predictions.")
+    print("\n--- Within-Backtest State Stability Check ---")
+
+    if num_chunks < 2:
+        print(f"Check disabled (stability_num_backtest_chunks = {num_chunks} < 2).")
+        return comparison_df, max_diff, model_is_stable
+    if states_backtest is None or len(states_backtest) == 0:
+        print("Could not perform check: Missing backtest state predictions.")
+        return comparison_df, max_diff, model_is_stable
+    if len(states_backtest) != len(backtest_index):
+         print("Could not perform check: Mismatch between states length and index length.")
+         return comparison_df, max_diff, model_is_stable
+    if len(states_backtest) < num_chunks:
+        print(f"Could not perform check: Not enough data points ({len(states_backtest)}) for {num_chunks} chunks.")
         return comparison_df, max_diff, model_is_stable
 
+
+    print(f"Splitting backtest period into {num_chunks} chunks for comparison.")
+
     try:
-        backtest_state_dist = pd.Series(states_backtest).value_counts(normalize=True).sort_index()
-        forwardtest_state_dist = pd.Series(states_forwardtest).value_counts(normalize=True).sort_index()
+        # Create a Series with datetime index to facilitate splitting if needed,
+        # but np.array_split works on the array directly based on position.
+        # state_series = pd.Series(states_backtest, index=backtest_index) # Not strictly needed for np.array_split
 
-        # Combine distributions for easy comparison
-        comparison_df = pd.DataFrame({
-            'Backtest %': backtest_state_dist * 100,
-            'Forward Test %': forwardtest_state_dist * 100
-        }).fillna(0).sort_index() # Fill missing states with 0% and sort
+        # Split the states array into N chunks based on position
+        # np.array_split handles uneven divisions reasonably well
+        state_chunks = np.array_split(states_backtest, num_chunks)
 
+        chunk_distributions = {}
+        all_states = np.unique(states_backtest) # Get all possible state values
+
+        # Calculate distribution for each chunk
+        for i, chunk in enumerate(state_chunks):
+            if len(chunk) == 0: continue # Skip empty chunks if split resulted in one
+            dist = pd.Series(chunk).value_counts(normalize=True) * 100
+            # Reindex to include all possible states, filling missing with 0
+            chunk_distributions[f'Chunk {i+1} %'] = dist.reindex(all_states, fill_value=0)
+
+        # Create comparison DataFrame
+        comparison_df = pd.DataFrame(chunk_distributions).sort_index()
+        print("\nState Distributions per Backtest Chunk:")
         print(comparison_df)
 
-        # Simple stability check: Max absolute difference in proportions
-        max_diff = (comparison_df['Backtest %'] - comparison_df['Forward Test %']).abs().max()
-        print(f"\nMax difference in state proportions: {max_diff:.2f}%")
+        # Calculate max difference between all pairs of chunks
+        max_diff = 0.0
+        if num_chunks >= 2:
+            for (col1, col2) in combinations(comparison_df.columns, 2):
+                chunk_pair_diff = (comparison_df[col1] - comparison_df[col2]).abs().max()
+                max_diff = max(max_diff, chunk_pair_diff)
+
+        print(f"\nMax difference between any two chunks: {max_diff:.2f}%")
 
         # ANSI escape codes for colors
         COLOR_GREEN = "\033[92m" # Bright Green
@@ -838,21 +872,18 @@ def perform_state_stability_check(states_backtest, states_forwardtest, stability
         COLOR_RESET = "\033[0m"  # Reset color
 
         if max_diff <= stability_threshold:
-            print(f"{COLOR_GREEN}State distributions appear reasonably stable (Max Diff <= {stability_threshold}%).{COLOR_RESET}")
+            print(f"{COLOR_GREEN}State distributions appear reasonably stable within backtest (Max Diff <= {stability_threshold}%).{COLOR_RESET}")
             model_is_stable = True
         else:
-            print(f"{COLOR_RED}Warning: State distributions differ significantly (Max Diff > {stability_threshold}%). Model/features may lack robustness.{COLOR_RESET}")
+            print(f"{COLOR_RED}Warning: State distributions differ significantly within backtest (Max Diff > {stability_threshold}%). Model/features may lack robustness.{COLOR_RESET}")
             model_is_stable = False
-        print("------------------------------------")
+        print("--------------------------------------------")
 
     except Exception as e:
-        print(f"Error during state stability check: {e}")
-        # Ensure default return values in case of error during calculation
+        print(f"Error during within-backtest stability check: {e}")
         max_diff = np.inf
         model_is_stable = False
-        # comparison_df might be partially created, leave it as is or set to None
         comparison_df = None
-
 
     return comparison_df, max_diff, model_is_stable
 
@@ -1412,18 +1443,21 @@ if __name__ == "__main__":
     states_forwardtest = predict_states(hmm_model, X_scaled_forwardtest)
 
 
-    # --- State Stability Check ---
-    stability_threshold = config['state_stability_threshold']
-    stability_comparison_df, max_diff, model_is_stable = perform_state_stability_check(
-        states_backtest, states_forwardtest, stability_threshold
+    # --- Within-Backtest State Stability Check --- ## <<<< MODIFIED CALL >>>>
+    # Pass states, the corresponding index, and the config object
+    stability_comparison_df, max_diff, model_is_stable = perform_within_backtest_stability_check(
+        states_backtest, df_features_backtest.index, config # Pass index and config
     )
     # Store stability results for summary
     stability_results = {
-        'max_difference_pct': max_diff,
+        'check_type': 'Within Backtest',
+        'num_chunks': config['stability_num_backtest_chunks'],
+        'max_difference_pct': max_diff if max_diff != np.inf else None, # Store None if error/disabled
         'is_stable': model_is_stable,
-        'stability_threshold_pct': stability_threshold,
+        'stability_threshold_pct': config.get('state_stability_threshold', 20),
         'distribution_comparison': stability_comparison_df.to_dict() if stability_comparison_df is not None else None
     }
+    # <<<< END MODIFIED CALL >>>>
 
 
     # --- Analyze HMM States (Backtest) ---

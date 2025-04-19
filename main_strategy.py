@@ -935,9 +935,13 @@ def perform_within_backtest_stability_check(states_backtest, backtest_index, con
         print(f"\nMax difference between any two chunks: {max_diff:.2f}%")
 
         # ANSI escape codes for colors
-        COLOR_GREEN = "\033[92m" # Bright Green
-        COLOR_RED = "\033[91m"   # Bright Red
-        COLOR_RESET = "\033[0m"  # Reset color
+        # COLOR_GREEN = "\033[92m" # Bright Green
+        # COLOR_RED = "\033[91m"   # Bright Red
+        # COLOR_RESET = "\033[0m"  # Reset color
+
+        COLOR_GREEN = "" # Bright Green
+        COLOR_RED = ""   # Bright Red
+        COLOR_RESET = ""  # Reset color
 
         if max_diff <= stability_threshold:
             print(f"{COLOR_GREEN}State distributions appear reasonably stable within backtest (Max Diff <= {stability_threshold}%).{COLOR_RESET}")

@@ -24,6 +24,9 @@ The workflow automates:
 
 <hr>
 
+# Presentation Slide Link
+[https://drive.google.com/file/d/1UlPR5IOaHXM3yFykAmw-tSijgYSNkQ9l/view?usp=sharing]
+
 ## Project Structure
 
 ```

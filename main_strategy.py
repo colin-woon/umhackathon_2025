@@ -507,11 +507,11 @@ def generate_signals(df_with_state, signal_map): # Takes DataFrame with 'state' 
     print("Signals generated.")
     return df
 
-# --- Backtesting (Modified for B&H and Starting Value) ---
-def run_backtest(df, fee_percent, start_value=1000.0): # Added start_value
+# --- Backtesting (Modified for Cumulative PnL) ---
+def run_backtest(df, fee_percent, start_value=1000.0):
     """
     Runs the backtest simulation, calculates PnL, strategy equity,
-    and Buy & Hold equity.
+    Buy & Hold equity, and Cumulative PnL.
     """
     print("Running backtest...")
     if 'close' not in df.columns or 'signal' not in df.columns:
@@ -521,34 +521,28 @@ def run_backtest(df, fee_percent, start_value=1000.0): # Added start_value
     df_backtest = df.copy()
 
     # Strategy Calculation
-    df_backtest['position'] = df_backtest['signal'].shift(1).fillna(0) # Trade based on previous signal
-    df_backtest['price_change_pct'] = df_backtest['close'].pct_change().fillna(0) # Use pct_change
+    df_backtest['position'] = df_backtest['signal'].shift(1).fillna(0)
+    df_backtest['price_change_pct'] = df_backtest['close'].pct_change().fillna(0)
     df_backtest['strategy_return_gross'] = df_backtest['position'] * df_backtest['price_change_pct']
-
-    # Calculate trade occurrences for fees and markers
     df_backtest['trade'] = df_backtest['position'].diff().fillna(0)
-    trades = df_backtest[df_backtest['trade'] != 0]
-
-    # Apply trading fees
-    fees = abs(df_backtest['trade']) * fee_percent # Fee applied on position change value? Or % of trade? Assuming % for now.
-    # A more realistic fee might be: abs(df_backtest['trade']) * df_backtest['close'] * fee_percent / portfolio_value_at_trade
-    # For simplicity, applying fee directly to return (approximation)
+    fees = abs(df_backtest['trade']) * fee_percent
     df_backtest['strategy_return_net'] = df_backtest['strategy_return_gross'] - fees
 
-    # Calculate cumulative returns *relative to 1* first
+    # Calculate cumulative returns relative to 1 AND portfolio value
     df_backtest['cumulative_strategy_relative'] = (1 + df_backtest['strategy_return_net']).cumprod()
-    # Calculate actual portfolio value starting from start_value
     df_backtest['strategy_portfolio_value'] = start_value * df_backtest['cumulative_strategy_relative']
 
+    # --- ADD Cumulative PnL Calculation ---
+    # This represents the sum of net returns over time, starting from 0
+    df_backtest['cumulative_pnl'] = df_backtest['strategy_return_net'].cumsum()
+    # --- End Add ---
 
     # Buy and Hold Calculation
     df_backtest['asset_return'] = df_backtest['close'].pct_change().fillna(0)
     df_backtest['buy_and_hold_relative'] = (1 + df_backtest['asset_return']).cumprod()
     df_backtest['buy_and_hold_portfolio_value'] = start_value * df_backtest['buy_and_hold_relative']
 
-
     print("Backtest finished.")
-    # Return df with all calculations including portfolio values and trade markers
     return df_backtest
 
 # --- Performance Metrics (Adapted for Portfolio Value) ---
@@ -1130,6 +1124,92 @@ def create_output_directory(base_dir="outputs"):
         print(f"Error creating output directory '{run_output_dir}': {e}")
         return None
 
+# --- New Plotting Function for PnL vs Price ---
+def plot_pnl_vs_price(results_bt, results_ft, output_path):
+    """
+    Generates and saves a plot showing Cumulative PnL vs Close Price
+    for backtest and forward test periods.
+    """
+    if results_bt is None or results_ft is None:
+        print("Skipping PnL vs Price plot: Missing results data.")
+        return
+
+    required_cols = ['cumulative_pnl', 'close']
+    if not all(col in results_bt.columns for col in required_cols) or \
+       not all(col in results_ft.columns for col in required_cols):
+           print(f"Skipping PnL vs Price plot: Missing one or more required columns: {required_cols}")
+           return
+
+    print(f"Generating Cumulative PnL vs Price plot to: {output_path}")
+
+    # Create figure and primary axes for PnL
+    fig, ax1 = plt.subplots(figsize=(14, 7))
+
+    # Plot Backtest PnL on ax1
+    color_bt_pnl = 'tab:blue'
+    ax1.set_xlabel('Date')
+    ax1.set_ylabel('Cumulative PnL', color=color_bt_pnl)
+    ax1.plot(results_bt.index, results_bt['cumulative_pnl'], color=color_bt_pnl, label='Backtest Cum. PnL', lw=1.5)
+    ax1.tick_params(axis='y', labelcolor=color_bt_pnl)
+    ax1.grid(True, axis='y', linestyle='--', alpha=0.7) # Grid for PnL axis
+
+    # Plot Forward Test PnL on ax1
+    color_ft_pnl = 'tab:orange'
+    # Make sure forward test PnL continues from backtest end PnL for visual continuity
+    bt_end_pnl = results_bt['cumulative_pnl'].iloc[-1] if not results_bt.empty else 0
+    ft_pnl_adjusted = results_ft['cumulative_pnl'] - (results_ft['cumulative_pnl'].iloc[0] if not results_ft.empty else 0) + bt_end_pnl
+    ax1.plot(results_ft.index, ft_pnl_adjusted, color=color_ft_pnl, label='Forward Test Cum. PnL', lw=1.5)
+    # ax1 limits might need adjustment based on PnL range
+
+
+    # Create secondary axes for Price, sharing the x-axis
+    ax2 = ax1.twinx()
+    color_price = 'tab:red'
+    ax2.set_ylabel('Close Price', color=color_price)
+    ax2.plot(results_bt.index, results_bt['close'], color=color_price, label='Backtest Close Price', linestyle=':', lw=1, alpha=0.8)
+    ax2.plot(results_ft.index, results_ft['close'], color='tab:pink', label='Forward Test Close Price', linestyle=':', lw=1, alpha=0.8)
+    ax2.tick_params(axis='y', labelcolor=color_price)
+    # ax2.set_yscale('log') # Optional: Log scale for price if needed
+
+    # --- Add Trade Markers (Optional, on PnL curve) ---
+    all_results = pd.concat([results_bt, results_ft]) # Combine for easier plotting
+     # Adjust forward test PnL in the combined df for plotting markers correctly
+    if not results_ft.empty and not results_bt.empty:
+         all_results.loc[results_ft.index, 'cumulative_pnl'] = ft_pnl_adjusted
+
+    trades = all_results[all_results['trade'] != 0].copy()
+    buy_entries = trades[trades['position'] == 1]
+    sell_entries = trades[trades['position'] == -1]
+
+    if not buy_entries.empty:
+        ax1.scatter(buy_entries.index, buy_entries['cumulative_pnl'],
+                    label='Buy Entry', marker='^', color='green', s=50, alpha=0.7, zorder=5)
+    if not sell_entries.empty:
+        ax1.scatter(sell_entries.index, sell_entries['cumulative_pnl'],
+                    label='Sell Entry', marker='v', color='red', s=50, alpha=0.7, zorder=5)
+    # --- End Trade Markers ---
+
+
+    # --- Final Formatting ---
+    fig.suptitle('Cumulative PnL vs Close Price (Backtest & Forward Test)') # Use suptitle for overall title
+    ax1.set_title('Strategy Performance Analysis', fontsize=10) # Subtitle if needed
+    # Combine legends
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    # Add scatter labels if they exist
+    scatter_handles = [h for h in ax1.collections] # Get scatter handles if any were plotted
+    scatter_labels = [h.get_label() for h in scatter_handles]
+    ax2.legend(lines + lines2 + scatter_handles, labels + labels2 + scatter_labels, loc='upper left')
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent title overlap
+
+    try:
+        plt.savefig(output_path)
+        print("Cumulative PnL vs Price plot saved.")
+    except Exception as e:
+        print(f"Error saving Cumulative PnL vs Price plot: {e}")
+    plt.close(fig) # Close the figure
+
 # --- Main Execution (Including Plotting and Saving) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
@@ -1254,6 +1334,9 @@ if __name__ == "__main__":
     # Handle potential failure
     if performance_ft is None: performance_ft = {"Error": "Forward test execution failed"}
 
+    # --- Plot Cumulative PnL vs Price --- ## <<<< MODIFIED CALL >>>>
+    pnl_plot_path = os.path.join(run_output_dir, 'cumulative_pnl_vs_price.png')
+    plot_pnl_vs_price(results_bt, results_ft, pnl_plot_path)
 
     # --- Plot Equity Curves ---
     # <<<< CALL NEW FUNCTION >>>>

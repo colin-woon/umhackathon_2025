@@ -148,5 +148,3 @@ This script will:
 ## Sources and Related Content
 
 Refer to the cybotrade.rs documentation for API details and additional resources.
-
-Presentation slide: https://gamma.app/docs/DATABAES-5049dexzc2ktecg 

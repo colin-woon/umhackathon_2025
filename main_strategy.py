@@ -4,10 +4,12 @@ import yaml
 import os
 import argparse
 from sklearn.preprocessing import StandardScaler
-import joblib # For saving the scaler later if needed for forward testing
-from hmmlearn import hmm # Requires hmmlearn
-# from sklearn.preprocessing import StandardScaler # Optional: If scaling features
-# from sklearn.metrics import accuracy_score # Optional: If evaluating HMM directly
+import joblib
+from hmmlearn import hmm
+import matplotlib.pyplot as plt # For plotting
+import seaborn as sns          # For heatmap
+from datetime import datetime  # For timestamped output directory
+import shutil                 # For copying config file
 
 # --- Configuration Loading ---
 def load_config(config_path='config.yaml'):
@@ -513,9 +515,11 @@ def find_best_hmm_model(X_scaled, config, feature_list):
     # --- End of Loop ---
     return best_hmm_model, best_n_states, best_bic, best_aic
 
+# --- Feature Selection (Modified to return correlation matrix) ---
 def select_features_by_correlation(df_features_backtest, features_available, corr_threshold):
     """
     Performs feature selection by removing highly correlated features.
+    Also returns the correlation matrix and corresponding feature names for plotting.
 
     Args:
         df_features_backtest (pd.DataFrame): DataFrame containing engineered features for backtesting.
@@ -523,28 +527,35 @@ def select_features_by_correlation(df_features_backtest, features_available, cor
         corr_threshold (float): The correlation threshold above which features will be dropped.
 
     Returns:
-        list: The final list of selected feature names after removing highly correlated ones.
-              Returns the original features_available list if selection cannot be performed.
+        tuple: (final_feature_list, correlation_matrix, numeric_feature_names)
+               - final_feature_list (list): Selected feature names.
+               - correlation_matrix (pd.DataFrame or None): The calculated correlation matrix.
+               - numeric_feature_names (list or None): Names of features used in the matrix.
+               Returns (features_available, None, None) if selection cannot be performed.
     """
     print("\n--- Performing Basic Feature Selection (using Backtest data) ---")
     print(f"Features available for selection: {features_available}")
     final_feature_list = features_available[:] # Start with all available features
+    correlation_matrix = None
+    numeric_feature_names = None
 
     if len(features_available) <= 1:
         print("Not enough features available for correlation check.")
-        return final_feature_list
+        return final_feature_list, correlation_matrix, numeric_feature_names
 
     # Select only numeric features for correlation calculation
     numeric_features_df = df_features_backtest[features_available].select_dtypes(include=np.number)
-    print(f"Numeric features considered for correlation: {numeric_features_df.columns.tolist()}")
+    numeric_feature_names = numeric_features_df.columns.tolist() # Get names used
+    print(f"Numeric features considered for correlation: {numeric_feature_names}")
 
     if len(numeric_features_df.columns) <= 1:
         print("Not enough numeric features for correlation check.")
-        return final_feature_list
+        return final_feature_list, correlation_matrix, numeric_feature_names # Return names even if no matrix
 
     # Calculate correlation matrix
-    corr_matrix = numeric_features_df.corr().abs()
-    upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    correlation_matrix = numeric_features_df.corr() # Keep original signs for heatmap
+    corr_matrix_abs = correlation_matrix.abs() # Use absolute for dropping
+    upper_tri = corr_matrix_abs.where(np.triu(np.ones(corr_matrix_abs.shape), k=1).astype(bool))
 
     # Find features to drop
     to_drop = [column for column in upper_tri.columns if any(upper_tri[column] > corr_threshold)]
@@ -557,10 +568,12 @@ def select_features_by_correlation(df_features_backtest, features_available, cor
 
     if not final_feature_list:
         print("Warning: Feature selection removed all features! Returning original list.")
-        return features_available # Avoid returning empty list
+        # Return original list, but still return matrix and names for potential plotting
+        return features_available, correlation_matrix, numeric_feature_names
 
     print(f"\nFeatures selected for HMM: {final_feature_list}")
-    return final_feature_list
+    # Return list, the calculated matrix (not abs), and the names used for the matrix
+    return final_feature_list, correlation_matrix, numeric_feature_names
 
 def perform_state_stability_check(states_backtest, states_forwardtest, stability_threshold):
     """
@@ -781,85 +794,234 @@ def run_and_evaluate_test_period(df_features, states, config, period_label="Test
     # print(f"Saved {period_label} results to {file_name}")
 
     return df_results, performance_summary
-# --- Main Execution (Refactored with More Functions) ---
+
+# --- Plotting Functions ---
+def plot_correlation_heatmap(corr_matrix, feature_names, output_path):
+    """Generates and saves a heatmap of the feature correlation matrix."""
+    if corr_matrix is None or corr_matrix.empty:
+        print("Skipping correlation heatmap: No correlation matrix provided.")
+        return
+    print(f"Generating Correlation Heatmap to: {output_path}")
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt=".2f", linewidths=.5,
+                xticklabels=feature_names, yticklabels=feature_names)
+    plt.title('Feature Correlation Matrix')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    try:
+        plt.savefig(output_path)
+        print("Correlation heatmap saved.")
+    except Exception as e:
+        print(f"Error saving correlation heatmap: {e}")
+    plt.close() # Close the plot to free memory
+
+def plot_equity_curves(results_bt, results_ft, output_path):
+    """Generates and saves equity curves for backtest and forward test."""
+    if results_bt is None or results_ft is None:
+        print("Skipping equity curve plot: Missing results data.")
+        return
+    if 'cumulative_strategy_return_net' not in results_bt.columns or \
+       'cumulative_strategy_return_net' not in results_ft.columns:
+           print("Skipping equity curve plot: 'cumulative_strategy_return_net' column missing.")
+           return
+
+    print(f"Generating Equity Curves to: {output_path}")
+    plt.figure(figsize=(12, 6))
+
+    # Plot Backtest Equity (Portfolio Value starting from 1)
+    plt.plot(results_bt.index, results_bt['cumulative_strategy_return_net'], label='Backtest Equity')
+
+    # Plot Forward Test Equity (Portfolio Value starting from 1)
+    # Ensure index alignment if needed, but usually separate plots or just concat works if dates are contiguous
+    # For simplicity, plotting on same axes assuming date index handles it.
+    plt.plot(results_ft.index, results_ft['cumulative_strategy_return_net'], label='Forward Test Equity')
+
+    plt.title('Strategy Equity Curve (Backtest vs Forward Test)')
+    plt.xlabel('Date')
+    plt.ylabel('Portfolio Value (Starting from 1)')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    try:
+        plt.savefig(output_path)
+        print("Equity curve plot saved.")
+    except Exception as e:
+        print(f"Error saving equity curve plot: {e}")
+    plt.close()
+
+# --- Saving Function ---
+def save_run_summary(config, performance_bt, performance_ft, stability_results, output_dir):
+    """Saves config and performance summaries to a YAML file in the output dir."""
+    print(f"\n--- Saving Run Summary to '{output_dir}/' ---")
+    summary_data = {
+        'run_timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'configuration': config,
+        'performance_backtest': performance_bt,
+        'performance_forwardtest': performance_ft,
+        'state_stability': stability_results # Include stability results dict
+    }
+    summary_path = os.path.join(output_dir, 'run_summary.yaml')
+    try:
+        with open(summary_path, 'w') as f:
+            yaml.dump(summary_data, f, default_flow_style=False, sort_keys=False)
+        print(f"Run summary saved to {summary_path}")
+
+        # Also copy the original config file for exact reference
+        config_source_path = config.get('__source_path__', 'config.yaml') # Get source if stored, else default
+        if os.path.exists(config_source_path):
+             shutil.copy2(config_source_path, os.path.join(output_dir, 'config_used.yaml'))
+             print(f"Copied original config '{config_source_path}' to output directory.")
+        else:
+             print(f"Warning: Could not find original config at '{config_source_path}' to copy.")
+
+    except Exception as e:
+        print(f"Error saving run summary: {e}")
+
+# Helper function to create output directory
+def create_output_directory(base_dir="outputs"):
+    """Creates a timestamped directory for the current run's outputs."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_output_dir = os.path.join(base_dir, f"run_{timestamp}")
+    try:
+        os.makedirs(run_output_dir, exist_ok=True)
+        print(f"Created output directory: {run_output_dir}")
+        return run_output_dir
+    except Exception as e:
+        print(f"Error creating output directory '{run_output_dir}': {e}")
+        return None
+
+# --- Main Execution (Including Plotting and Saving) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run HMM Trading Strategy Backtest.")
     parser.add_argument('--config', type=str, default='config.yaml', help='Path to the configuration file.')
     args = parser.parse_args()
 
+    # --- Create Output Directory for this Run ---
+    run_output_dir = create_output_directory(base_dir="outputs")
+    if not run_output_dir: exit("Error: Could not create output directory.")
+
     # --- Configuration ---
-    config = load_config(args.config)
-    if not config: exit(1) # Exit if config loading failed
+    config_path = args.config
+    config = load_config(config_path)
+    if not config: exit(1)
+    config['__source_path__'] = config_path # Store path for later copying
 
     # --- Data Loading ---
-    print("\n--- Loading Data ---")
+    # ... (keep existing data loading logic) ...
     df_raw_backtest, final_names_bt = load_and_preprocess_data(config, mode='backtest')
     df_raw_forwardtest, final_names_ft = load_and_preprocess_data(config, mode='forwardtest')
-    final_column_names = final_names_bt if final_names_bt else {} # Use backtest names map
+    final_column_names = final_names_bt if final_names_bt else {}
     if df_raw_backtest is None or df_raw_backtest.empty: exit("Error: Could not load backtest data.")
     if df_raw_forwardtest is None or df_raw_forwardtest.empty: exit("Error: Could not load forward test data.")
 
+
     # --- Feature Engineering ---
+    # ... (keep existing feature engineering logic) ...
     feature_list_from_config = config.get('features', [])
     if not feature_list_from_config: exit("Error: 'features' list in config is empty.")
-    print("\n--- Engineering Features ---") # Combined print message
+    print("\n--- Engineering Features ---")
     df_features_backtest = engineer_features(df_raw_backtest, final_column_names, feature_list_from_config)
     df_features_forwardtest = engineer_features(df_raw_forwardtest, final_column_names, feature_list_from_config)
     if df_features_backtest is None or df_features_backtest.empty: exit("Error: Backtest feature engineering failed.")
     if df_features_forwardtest is None or df_features_forwardtest.empty: exit("Error: Forward test feature engineering failed.")
 
-    # --- Feature Selection ---
+
+    # --- Feature Selection & Correlation Plot ---
     features_available = [f for f in feature_list_from_config if f in df_features_backtest.columns]
     corr_threshold = config.get('feature_corr_threshold', 0.95)
-    feature_list = select_features_by_correlation(df_features_backtest, features_available, corr_threshold)
+    # ---- MODIFIED CALL ----
+    feature_list, corr_matrix, corr_feature_names = select_features_by_correlation(
+        df_features_backtest, features_available, corr_threshold
+    )
     if not feature_list: exit("Error: Feature selection removed all features.")
+    # ---- PLOT CORRELATION ----
+    if corr_matrix is not None:
+        heatmap_path = os.path.join(run_output_dir, 'correlation_heatmap.png')
+        plot_correlation_heatmap(corr_matrix, corr_feature_names, heatmap_path)
+
 
     # --- Prepare Feature Arrays ---
     X_backtest, X_forwardtest = prepare_feature_arrays(df_features_backtest, df_features_forwardtest, feature_list)
     if X_backtest is None or X_forwardtest is None: exit("Error: Failed to prepare feature arrays.")
 
+
     # --- Scale Data ---
+    # ... (keep existing scaling logic) ...
     print("\n--- Scaling Data ---")
     scaler = StandardScaler()
-    X_scaled_backtest = scaler.fit_transform(X_backtest)      # Fit and transform backtest
-    X_scaled_forwardtest = scaler.transform(X_forwardtest) # Only transform forward test
+    X_scaled_backtest = scaler.fit_transform(X_backtest)
+    X_scaled_forwardtest = scaler.transform(X_forwardtest)
     print("Features scaled.")
 
+
     # --- Find Best HMM Model ---
+    # ... (keep existing HMM finding logic) ...
     hmm_model, best_n_states, _, _ = find_best_hmm_model(X_scaled_backtest, config, feature_list)
     if hmm_model is None: exit("Error: Failed to find suitable HMM model.")
     print(f"\n--- Best model selected: n_states = {best_n_states} ---")
 
+
     # --- Save Model Artifacts ---
-    save_model_and_scaler(hmm_model, scaler, directory='models')
+    # <<<< CALL NEW FUNCTION >>>>
+    save_model_and_scaler(hmm_model, scaler, directory=os.path.join(run_output_dir, 'models'))
+
 
     # --- Predict States ---
+    # ... (keep existing state prediction logic) ...
     print("\n--- Predicting States ---")
     states_backtest = predict_states(hmm_model, X_scaled_backtest)
     states_forwardtest = predict_states(hmm_model, X_scaled_forwardtest)
 
+
     # --- State Stability Check ---
     stability_threshold = config.get('state_stability_threshold', 20)
-    _, _, model_is_stable = perform_state_stability_check(
+    stability_comparison_df, max_diff, model_is_stable = perform_state_stability_check(
         states_backtest, states_forwardtest, stability_threshold
     )
-    # Optionally use model_is_stable later
+    # Store stability results for summary
+    stability_results = {
+        'max_difference_pct': max_diff,
+        'is_stable': model_is_stable,
+        'stability_threshold_pct': stability_threshold,
+        'distribution_comparison': stability_comparison_df.to_dict() if stability_comparison_df is not None else None
+    }
+
 
     # --- Analyze HMM States (Backtest) ---
-    # Pass the features df *without* the state column for analysis function
+    # <<<< CALL NEW FUNCTION >>>>
     analyze_hmm_states(hmm_model, feature_list, df_features_backtest, states_backtest)
 
+
     # --- Run Backtest Period ---
-    # Pass the features df *without* the state column for execution function
+    # <<<< CALL NEW FUNCTION >>>>
     results_bt, performance_bt = run_and_evaluate_test_period(
         df_features_backtest, states_backtest, config, period_label="Backtest"
     )
+    # Handle potential failure
+    if performance_bt is None: performance_bt = {"Error": "Backtest execution failed"}
+
 
     # --- Run Forward Test Period ---
-    # Pass the features df *without* the state column for execution function
+    # <<<< CALL NEW FUNCTION >>>>
     results_ft, performance_ft = run_and_evaluate_test_period(
         df_features_forwardtest, states_forwardtest, config, period_label="Forward Test"
     )
+    # Handle potential failure
+    if performance_ft is None: performance_ft = {"Error": "Forward test execution failed"}
+
+
+    # --- Plot Equity Curves ---
+    # <<<< CALL NEW FUNCTION >>>>
+    equity_curve_path = os.path.join(run_output_dir, 'equity_curve.png')
+    # Pass results_bt and results_ft which are returned by run_and_evaluate_test_period
+    plot_equity_curves(results_bt, results_ft, equity_curve_path)
+
+
+    # --- Save Run Summary ---
+    # <<<< CALL NEW FUNCTION >>>>
+    save_run_summary(config, performance_bt, performance_ft, stability_results, run_output_dir)
+
 
     print(f"\n--- Strategy execution finished ---")
-    # You can now access performance_bt and performance_ft if needed
+    print(f"Outputs saved in: {run_output_dir}")

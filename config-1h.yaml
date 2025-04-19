@@ -1,0 +1,142 @@
+# Configuration for ML Trading Strategy
+
+# --- Data Settings ---
+data_directory: "data"
+page_limit: 1000
+
+# Options: "daily", "hourly"
+data_timeframe: "hourly"
+
+# --- Data Download Settings (Used by download_data.py) ---
+# API key is read from environment variable CYBOTRADE_API_KEY
+
+# Define metrics and candles to download
+# Structure: {source: [ {path: "endpoint_path", params: {key: value, ...}}, ... ]}
+# VERIFY paths and parameter values (exchange, window, i, a, symbol, interval) against cybotrade.rs docs!
+metrics_to_download:
+  cryptoquant:
+    - path: "btc/exchange-flows/inflow"
+      params: { exchange: "binance", window: "hour" }
+    - path: "btc/market-data/funding-rates"
+      params: { exchange: "binance", window: "hour" }
+  glassnode:
+    - path: "addresses/active_count"
+      params: { a: "BTC", i: "1h" }
+    - path: "transactions/count"
+      params: { a: "BTC", i: "1h" }
+  coinglass:
+    - path: "futures/openInterest/ohlc-history"
+      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
+    - path: "futures/globalLongShortAccountRatio/history"
+      params: { exchange: "Binance", symbol: "BTCUSDT", interval: "1h" }
+  # Candle source uses a slightly different structure if needed, or can follow path/params
+  candles:
+     - source_override: "bybit-linear"
+       path: "candle"
+       params: { symbol: "BTCUSDT", interval: "1h"}
+
+
+# Time periods for downloading data (Unix timestamp in milliseconds)
+# Backtest Period
+# backtest_start_time_ms: 1577836800000     # Jan 1 2020
+backtest_start_time_ms: 1609459200000     # Jan 1 2021
+backtest_end_time_ms: 1704067199000       # Dec 31 2023
+# Forward Test Period
+forwardtest_start_time_ms: 1704067200000  # Jan 1 2024
+forwardtest_end_time_ms: 1735689600000    # Jan 1 2025
+
+# Data Preprocessing Settings
+# Define a dictionary of data files to load
+# eg:
+# [KEY] -- name of the dataset loaded, can be any name
+# [file_base] -- base name of the file to load, without these extensions (_backtest, _forwardtest, .csv)
+# [original_columns] -- list of columns to load from the file (sometimes files have value or v, so we need to cover the possibilities)
+# [target_column] -- name of the column to use in the final dataset (rename the original column to this name)
+#
+# Example:
+# cryptoquant_funding:
+#   file_base: "cryptoquant_btc_market-data_funding-rates"
+#   original_columns: ["fundingRate", "value"]
+#   target_column: "cryptoquant_funding_rate"
+
+data_files:
+  candles:
+    file_base: "bybit-linear_candle"
+  cryptoquant_inflow:
+    file_base: "cryptoquant_btc_exchange-flows_inflow"
+    original_columns: ["value"]
+    target_column: "cryptoquant_inflow_value"
+  cryptoquant_funding:
+    file_base: "cryptoquant_btc_market-data_funding-rates"
+    original_columns: ["fundingRate", "value"]
+    target_column: "cryptoquant_funding_rate"
+  glassnode_active:
+    file_base: "glassnode_addresses_active_count"
+    original_columns: ["value", "v"]
+    target_column: "glassnode_active_value"
+  glassnode_tx:
+    file_base: "glassnode_transactions_count"
+    original_columns: ["value", "v"]
+    target_column: "glassnode_tx_value"
+# --- Removed Coinglass Entries ---
+# coinglass_oi:
+#   file_base: "coinglass_futures_openInterest_ohlc-history"
+#   original_columns: ["openInterest", "c"]
+#   target_column: "coinglass_oi_value"
+# coinglass_lsr:
+#   file_base: "coinglass_futures_globalLongShortAccountRatio_history"
+#   original_columns: ["longShortRatio", "value"]
+#   target_column: "coinglass_lsr_value"
+
+# Features to use for HMM model training (Candidate Pool based on Research)
+# Note: Some features (e.g., TAAR, Perp_Spot_Gap) may require additional data sources or calculations not explicitly listed in your initial dataset configuration.
+# Parameter values (e.g., 7d, 14d, 90d, k) are suggestions and should be optimized during model development.
+permutation_test_runs: 100
+feature_corr_threshold: 0.95
+features:
+  # Features derived from available data (Candles, Funding, Inflow, Active Addr, Tx Count)
+  - "price_return"
+  - "ema_12_period_slope"
+  - "ema_3_period_slope"
+  - "rsi_15_period_value"
+  - "rsi_6_period_value"
+  - "volatility_6h"
+  # - "volatility_24h" # Removed
+  - "volume_change"
+  - "hourly_volume_spike_binance"
+  - "funding_rate"
+  - "funding_rate_change"
+  - "funding_rate_extreme_flag"
+  # - "active_addr_roc_24h" # Removed
+  # - "tx_count_roc_24h" # Removed
+  - "active_addr_tx_ratio"
+  # Removed features based on missing data (Order Book, Sentiment, Arbitrage, Liquidation, Mempool, Coinglass OI/LSR, etc.)
+
+# HMM Settings
+stability_num_backtest_chunks: 3
+# Avoid going more than 8 states for HMM, as it can lead to overfitting
+min_hmm_states: 8
+max_hmm_states: 8
+# Options: "spherical", "diag", "full", "tied"
+hmm_covariance_type: "diag"
+hmm_iterations: 1000
+state_stability_threshold: 20
+
+# Trading Strategy Settings
+trading_fee_percent: 0.0006
+
+# Map HMM states to trading signals (0=Do Nothing, 1=Buy, -1=Sell)
+signal_map:
+  0: 0   # Strong negative return, high LSR
+  1: 0  # Positive return, extreme funding
+  2: -1   # Positive return, low vol
+  3: 0 # High vol consolidation
+  4: 0   # Positive return, very high LSR
+  5: 1   # Crash / Capitulation
+  6: 1  # Strong bullish momentum / blow-off
+  7: 0  # Negative return, low vol
+
+# Backtest/Forward Test Execution Settings
+# Options: "backtest", "forwardtest"
+# run_mode: "backtest"
+# run_mode: "forwardtest"

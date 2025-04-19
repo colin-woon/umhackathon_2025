@@ -133,6 +133,23 @@ def fetch_data_from_api(api_key, base_url, source, path, source_params, start_ti
         df['timestamp'] = pd.to_datetime(df['start_time'], unit='ms')
         df = df.set_index('timestamp')
 
+        # --- START ADDED RENAMING LOGIC ---
+        # Standardize known differing column names from specific endpoints before further processing
+        rename_map = {}
+        if source == 'cryptoquant':
+            if path == 'btc/exchange-flows/inflow' and 'inflow_mean' in df.columns:
+                rename_map['inflow_mean'] = 'value'
+                print(f"  Standardizing column name: 'inflow_mean' -> 'value'")
+            elif path == 'btc/market-data/funding-rates' and 'funding_rates' in df.columns:
+                # Prefer renaming to 'fundingRate' as it's more specific, but 'value' is also used in config
+                rename_map['funding_rates'] = 'fundingRate'
+                print(f"  Standardizing column name: 'funding_rates' -> 'fundingRate'")
+            # Add more elif blocks here if other endpoints have known inconsistencies
+
+        if rename_map:
+            df.rename(columns=rename_map, inplace=True)
+        # --- END ADDED RENAMING LOGIC ---
+
         # Remove duplicates based on index (important after pagination)
         df = df.loc[~df.index.duplicated(keep='first')]
 

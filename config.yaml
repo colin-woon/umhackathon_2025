@@ -4,11 +4,12 @@
 data_directory: "data"
 page_limit: 1000
 
+
 # --- Data Download Settings (Used by download_data.py) ---
 # API key is read from environment variable CYBOTRADE_API_KEY
 
 # Define metrics and candles to download
-# Structure: {source: [ {path: "endpoint_path", params: {key: value, ...}}, ... ]}
+# Structure: {source: [ {path: "endpoint_cath", params: {key: value, ...}}, ... ]}
 # VERIFY paths and parameter values (exchange, window, i, a, symbol, interval) against cybotrade.rs docs!
 metrics_to_download:
   cryptoquant:

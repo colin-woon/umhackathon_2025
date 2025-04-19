@@ -104,27 +104,46 @@ def load_and_preprocess_data(config, mode='backtest'):
             df_temp = pd.read_csv(file_path, index_col='timestamp', parse_dates=True)
 
             col_to_use = None
-            # Find the first available column from the original_columns list
-            for potential_col in original_columns:
-                if potential_col in df_temp.columns:
-                    col_to_use = potential_col
-                    print(f"  Found specified column '{col_to_use}' for key '{key}'.")
-                    break # Stop searching once found
+            # --- START REVISED LOGIC ---
+            # 1. Check explicitly specified columns first
+            if original_columns: # Only check if original_columns is provided and not empty
+                for potential_col in original_columns:
+                    if potential_col in df_temp.columns:
+                        col_to_use = potential_col
+                        print(f"  Found specified column '{col_to_use}' for key '{key}' from 'original_columns'.")
+                        break # Stop searching once found
 
-
-            # Fallback if no specific logic or column found
+            # 2. Fallback: If no specified column found, search generic data columns, excluding time/date cols
             if col_to_use is None:
-                data_cols = [col for col in df_temp.columns if col.lower() not in ['timestamp', 'start_time', 'end_time', 'time', 'date']] # Exclude 'date' too
-                if data_cols:
-                    col_to_use = data_cols[0]
-                    # Use a generic fallback name if target_col_name wasn't set
-                    if target_col_name is None: target_col_name = f"{key}_generic"
-                    print(f"  Using fallback column '{col_to_use}' for key '{key}', renaming to '{target_col_name}'")
-                else:
-                    print(f"  Warning: Could not find suitable data column in {key}. Skipping merge.")
-                    continue
+                print(f"  Specified columns not found. Searching for fallback data column for key '{key}'.")
+                # Define columns to exclude from fallback search
+                exclude_cols = {'timestamp', 'start_time', 'end_time', 'time', 'date', 'datetime'} # Added 'datetime'
+                # Find potential data columns that are not excluded
+                potential_data_cols = [col for col in df_temp.columns if col.lower() not in exclude_cols]
 
-            # Perform rename and merge
+                if potential_data_cols:
+                    # Prioritize common names if they exist in the potential list
+                    common_fallbacks = ['value', 'v']
+                    found_common = False
+                    for common_col in common_fallbacks:
+                         if common_col in potential_data_cols:
+                              col_to_use = common_col
+                              print(f"  Using common fallback column '{col_to_use}'.")
+                              found_common = True
+                              break
+                    # If no common fallback, use the first potential data column found
+                    if not found_common:
+                         col_to_use = potential_data_cols[0]
+                         print(f"  Using first available non-excluded fallback column '{col_to_use}'.")
+                else:
+                    # No suitable column found at all
+                    print(f"  Warning: Could not find any suitable data column (neither specified nor fallback) in {key}. Skipping merge.")
+                    continue # Skip to the next file_info item
+
+            # 3. Proceed with rename and merge if col_to_use was found
+            # --- END REVISED LOGIC ---
+
+            print(f"  Renaming '{col_to_use}' to '{target_col_name}' and merging.") # Added print for clarity
             df_to_merge = df_temp[[col_to_use]].rename(columns={col_to_use: target_col_name})
             # Ensure numeric before merge
             df_to_merge[target_col_name] = pd.to_numeric(df_to_merge[target_col_name], errors='coerce')
@@ -160,10 +179,9 @@ def load_and_preprocess_data(config, mode='backtest'):
     # Return both the dataframe and the mapping of config keys to final column names
     return merged_df, final_column_names
 
-# --- Feature Engineering (Revised for Core Robust Features) ---
 def engineer_features(df, final_column_names, config_features): # config_features now unused, we use the fixed list
-    """Creates a core set of features for HMM, prioritizing stationarity."""
-    print("Engineering core features...")
+    """Creates a core set of features for HMM, focused on data actually available in the dataset."""
+    print("Engineering core features for hourly trading...")
     if df is None or df.empty:
         print("Error: Cannot engineer features on empty DataFrame.")
         return None
@@ -175,133 +193,239 @@ def engineer_features(df, final_column_names, config_features): # config_feature
     volume_col = 'volume'
     funding_col = final_column_names.get('cryptoquant_funding')
     active_col = final_column_names.get('glassnode_active')
-    tx_col = final_column_names.get('glassnode_tx') # Needed for active_addr_tx_ratio calc if used
+    tx_col = final_column_names.get('glassnode_tx')
     inflow_col = final_column_names.get('cryptoquant_inflow')
     oi_col = final_column_names.get('coinglass_oi')
-    lsr_col = final_column_names.get('coinglass_lsr') # Assuming this holds the raw L/S ratio
-
-    # --- 1. Price Return ---
-    # Hypothesis: Basic market movement.
+    lsr_col = final_column_names.get('coinglass_lsr')
+    
+    # List to track which features we actually calculate
+    calculated_features = []
+    
+    # --- BASIC PRICE FEATURES ---
+    
+    # 1. Price Return
     if close_col in df_feat.columns:
         df_feat['price_return'] = df_feat[close_col].pct_change()
+        calculated_features.append('price_return')
     else:
         print(f"Warning: Column '{close_col}' not found for price_return.")
-        df_feat['price_return'] = 0 # Assign default or handle error
-
-    # --- 2. Price Volatility ---
-    # Hypothesis: Market risk regime.
-    df_feat['volatility_10d'] = df_feat['price_return'].rolling(window=10).std()
-
-    # --- 3. Funding Rate Change ---
-    # Hypothesis: Momentum in derivatives sentiment/cost.
-    if funding_col and funding_col in df_feat.columns:
-        df_feat['funding_rate_change_1d'] = df_feat[funding_col].diff()
+        df_feat['price_return'] = 0
+    
+    # 2. EMA 5-Period and Slope -> Changed to EMA 12-Hour
+    if close_col in df_feat.columns:
+        # Calculate EMA
+        df_feat['ema_12'] = df_feat[close_col].ewm(span=12, adjust=False).mean() # Changed span to 12
+        # Calculate slope (rate of change)
+        df_feat['ema_12_period_slope'] = df_feat['ema_12'].diff() # Changed name
+        calculated_features.append('ema_12_period_slope') # Changed name
+        # Remove intermediate calculation
+        df_feat.drop('ema_12', axis=1, inplace=True, errors='ignore') # Changed name
     else:
-        print(f"Warning: Column '{funding_col}' not found for funding_rate_change_1d.")
-        df_feat['funding_rate_change_1d'] = 0
-
-    # --- 4. Funding Rate Extreme Flag ---
-    # Hypothesis: Funding extremes signal potential reversals.
+        print(f"Warning: Cannot calculate 'ema_12_period_slope' - missing close price.") # Changed name
+        df_feat['ema_12_period_slope'] = 0 # Changed name
+    
+    # 3. Shorter-term EMA Slope for Hourly Trading -> Keep EMA 3-Hour
+    if close_col in df_feat.columns:
+        # Calculate EMA
+        df_feat['ema_3'] = df_feat[close_col].ewm(span=3, adjust=False).mean()
+        # Calculate slope (rate of change)
+        df_feat['ema_3_period_slope'] = df_feat['ema_3'].diff()
+        calculated_features.append('ema_3_period_slope')
+        # Remove intermediate calculation
+        df_feat.drop('ema_3', axis=1, inplace=True, errors='ignore')
+    
+    # 4. RSI -> Keep 15-hour and 6-hour
+    if close_col in df_feat.columns:
+        # Calculate price changes
+        delta = df_feat[close_col].diff()
+        # Separate gains and losses
+        gains = delta.where(delta > 0, 0)
+        losses = -delta.where(delta < 0, 0)
+        # Calculate average gains and losses over the period
+        avg_gain = gains.rolling(window=15).mean() # 15 hours
+        avg_loss = losses.rolling(window=15).mean() # 15 hours
+        # Calculate RS and RSI
+        rs = avg_gain / avg_loss.replace(0, np.finfo(float).eps)  # Avoid division by zero
+        df_feat['rsi_15_period_value'] = 100 - (100 / (1 + rs))
+        calculated_features.append('rsi_15_period_value')
+        
+        # Add a shorter RSI for hourly data
+        avg_gain_short = gains.rolling(window=6).mean() # 6 hours
+        avg_loss_short = losses.rolling(window=6).mean() # 6 hours
+        rs_short = avg_gain_short / avg_loss_short.replace(0, np.finfo(float).eps)
+        df_feat['rsi_6_period_value'] = 100 - (100 / (1 + rs_short))
+        calculated_features.append('rsi_6_period_value')
+    else:
+        print(f"Warning: Cannot calculate RSI - missing close price.")
+        df_feat['rsi_15_period_value'] = 50
+        df_feat['rsi_6_period_value'] = 50
+    
+    # 5. Volatility Metrics -> Keep 6h and 24h
+    if 'price_return' in df_feat.columns:
+        # Short-term volatility for hourly trading
+        df_feat['volatility_6h'] = df_feat['price_return'].rolling(window=6).std()
+        calculated_features.append('volatility_6h')
+        
+        df_feat['volatility_24h'] = df_feat['price_return'].rolling(window=24).std()
+        calculated_features.append('volatility_24h')
+    
+    # --- VOLUME FEATURES ---
+    
+    # 6. Volume Change
+    if volume_col in df_feat.columns:
+        df_feat['volume_change'] = df_feat[volume_col].pct_change()
+        calculated_features.append('volume_change')
+        
+        # 7. Volume Spike Detection
+        vol_ma = df_feat[volume_col].rolling(window=24).mean()
+        df_feat['volume_ratio'] = df_feat[volume_col] / vol_ma
+        df_feat['hourly_volume_spike_binance'] = (df_feat['volume_ratio'] > 2).astype(int)
+        calculated_features.append('hourly_volume_spike_binance')
+        # Remove intermediate calculation
+        df_feat.drop('volume_ratio', axis=1, inplace=True, errors='ignore')
+    else:
+        print(f"Warning: Column '{volume_col}' not found for volume features.")
+        df_feat['volume_change'] = 0
+        df_feat['hourly_volume_spike_binance'] = 0
+    
+    # --- FUNDING RATE FEATURES ---
+    
+    # 8. Funding Rate Features
     if funding_col and funding_col in df_feat.columns:
-        rolling_window_90d = 90
-        # Calculate 5th and 95th percentiles over rolling window
-        lower_bound = df_feat[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.05)
-        upper_bound = df_feat[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.95)
+        # Raw value
+        df_feat['funding_rate'] = df_feat[funding_col]
+        calculated_features.append('funding_rate')
+        
+        # Change
+        df_feat['funding_rate_change'] = df_feat[funding_col].diff()
+        calculated_features.append('funding_rate_change')
+        
+        # Extreme Values Detection
+        rolling_window = 24*7  # 7 days of hourly data = 168 hours
+        lower_bound = df_feat[funding_col].rolling(window=rolling_window, min_periods=int(rolling_window*0.8)).quantile(0.05)
+        upper_bound = df_feat[funding_col].rolling(window=rolling_window, min_periods=int(rolling_window*0.8)).quantile(0.95)
         df_feat['funding_rate_extreme_flag'] = ((df_feat[funding_col] < lower_bound) | (df_feat[funding_col] > upper_bound)).astype(int)
+        calculated_features.append('funding_rate_extreme_flag')
     else:
-        print(f"Warning: Column '{funding_col}' not found for funding_rate_extreme_flag.")
+        print(f"Warning: Funding rate column not found for funding rate features.")
+        df_feat['funding_rate'] = 0
+        df_feat['funding_rate_change'] = 0
         df_feat['funding_rate_extreme_flag'] = 0
-
-    # --- 5. Active Address Rate of Change (14d) ---
-    # Hypothesis: Network adoption/activity momentum.
+    
+    # --- NETWORK ACTIVITY FEATURES ---
+    
+    # 9. Active Address Features - Use 24h ROC
     if active_col and active_col in df_feat.columns:
-        df_feat['active_addr_roc_14d'] = df_feat[active_col].pct_change(periods=14)
+        # Rate of change for shorter period (hourly trading)
+        df_feat['active_addr_roc_24h'] = df_feat[active_col].pct_change(periods=24)
+        calculated_features.append('active_addr_roc_24h')
     else:
-        print(f"Warning: Column '{active_col}' not found for active_addr_roc_14d.")
-        df_feat['active_addr_roc_14d'] = 0
-
-    # --- 6. Inflow / Volume Ratio ---
-    # Hypothesis: Significance of exchange flow pressure relative to market activity.
-    if inflow_col and inflow_col in df_feat.columns and volume_col in df_feat.columns:
-         denominator = pd.to_numeric(df_feat[volume_col], errors='coerce').replace(0, np.nan)
-         numerator = pd.to_numeric(df_feat[inflow_col], errors='coerce')
-         df_feat['inflow_vol_ratio'] = (numerator / denominator)
+        print(f"Warning: Active address column not found.")
+        df_feat['active_addr_roc_24h'] = 0
+    
+    # 10. Transaction Count Features - Use 24h ROC
+    if tx_col and tx_col in df_feat.columns:
+        # Rate of change
+        df_feat['tx_count_roc_24h'] = df_feat[tx_col].pct_change(periods=24)
+        calculated_features.append('tx_count_roc_24h')
     else:
-         print(f"Warning: Columns needed for inflow_vol_ratio not found ('{inflow_col}', '{volume_col}').")
-         df_feat['inflow_vol_ratio'] = 0
-
-    # --- 7. Open Interest Rate of Change (7d) ---
-    # Hypothesis: Momentum in leverage and market participation.
+        print(f"Warning: Transaction count column not found.")
+        df_feat['tx_count_roc_24h'] = 0
+    
+    # 11. Active Address to Transaction Count Ratio
+    if active_col and tx_col and active_col in df_feat.columns and tx_col in df_feat.columns:
+        denominator = pd.to_numeric(df_feat[tx_col], errors='coerce').replace(0, np.nan)
+        numerator = pd.to_numeric(df_feat[active_col], errors='coerce')
+        df_feat['active_addr_tx_ratio'] = (numerator / denominator)
+        calculated_features.append('active_addr_tx_ratio')
+    else:
+        print(f"Warning: Cannot calculate active address to transaction ratio.")
+        df_feat['active_addr_tx_ratio'] = 0
+    
+    # --- EXCHANGE INFLOW FEATURES ---
+    
+    # 12. Inflow Features
+    if inflow_col and inflow_col in df_feat.columns:
+        # Change in inflow
+        df_feat['inflow_change'] = df_feat[inflow_col].pct_change()
+        calculated_features.append('inflow_change')
+        
+        # Inflow to Volume Ratio
+        if volume_col in df_feat.columns:
+            denominator = pd.to_numeric(df_feat[volume_col], errors='coerce').replace(0, np.nan)
+            numerator = pd.to_numeric(df_feat[inflow_col], errors='coerce')
+            df_feat['inflow_vol_ratio'] = (numerator / denominator)
+            calculated_features.append('inflow_vol_ratio')
+    else:
+        print(f"Warning: Inflow column not found.")
+        df_feat['inflow_change'] = 0
+        df_feat['inflow_vol_ratio'] = 0
+    
+    # --- OPEN INTEREST FEATURES ---
+    
+    # 13. Open Interest Features -> Keep 6h change
     if oi_col and oi_col in df_feat.columns:
-        df_feat['oi_roc_7d'] = df_feat[oi_col].pct_change(periods=7)
+        # Change in open interest (1-hour change)
+        df_feat['oi_change'] = df_feat[oi_col].pct_change()
+        calculated_features.append('oi_change')
+        
+        # Hourly rate of change for shorter timeframe
+        df_feat['oi_change_6h'] = df_feat[oi_col].pct_change(periods=6)
+        calculated_features.append('oi_change_6h')
+        
+        # Open interest x price change interaction
+        if 'price_return' in df_feat.columns:
+            df_feat['oi_change_x_price_change'] = df_feat['oi_change'] * df_feat['price_return']
+            calculated_features.append('oi_change_x_price_change')
     else:
-        print(f"Warning: Column '{oi_col}' not found for oi_roc_7d.")
-        df_feat['oi_roc_7d'] = 0
-
-    # --- 8. & 9. L/S Ratio Z-Score & Extreme Flag ---
-    # Hypothesis: Statistically extreme retail sentiment signals potential reversals.
+        print(f"Warning: Open interest column not found.")
+        df_feat['oi_change'] = 0
+        df_feat['oi_change_6h'] = 0
+        df_feat['oi_change_x_price_change'] = 0
+    
+    # --- LONG/SHORT RATIO FEATURES ---
+    
+    # 14. L/S Ratio Features
     if lsr_col and lsr_col in df_feat.columns:
-        rolling_window_90d_lsr = 90
+        # Raw ratio
+        df_feat['lsr_value'] = df_feat[lsr_col]
+        calculated_features.append('lsr_value')
+        
+        # Z-score for extreme detection
+        rolling_window = 24*7  # 7 days of hourly data = 168 hours
         lsr_series = pd.to_numeric(df_feat[lsr_col], errors='coerce')
-        rolling_mean = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).mean()
-        rolling_std = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).std()
-        # Calculate Z-score, handle potential division by zero if std is 0
-        df_feat['lsr_zscore_90d'] = (lsr_series - rolling_mean) / rolling_std.replace(0, np.nan)
-        # Extreme Flag based on Z-score
+        rolling_mean = lsr_series.rolling(window=rolling_window, min_periods=int(rolling_window*0.8)).mean()
+        rolling_std = lsr_series.rolling(window=rolling_window, min_periods=int(rolling_window*0.8)).std()
+        df_feat['lsr_zscore'] = (lsr_series - rolling_mean) / rolling_std.replace(0, np.nan)
+        calculated_features.append('lsr_zscore')
+        
+        # Extreme flag
         z_threshold = 2.0
-        df_feat['lsr_extreme_flag'] = ((df_feat['lsr_zscore_90d'] > z_threshold) | (df_feat['lsr_zscore_90d'] < -z_threshold)).astype(int)
+        df_feat['lsr_extreme_flag'] = ((df_feat['lsr_zscore'] > z_threshold) | (df_feat['lsr_zscore'] < -z_threshold)).astype(int)
+        calculated_features.append('lsr_extreme_flag')
     else:
-        print(f"Warning: Column '{lsr_col}' not found for lsr_zscore_90d/lsr_extreme_flag.")
-        df_feat['lsr_zscore_90d'] = 0
+        print(f"Warning: L/S ratio column not found.")
+        df_feat['lsr_value'] = 1  # Neutral by default
+        df_feat['lsr_zscore'] = 0
         df_feat['lsr_extreme_flag'] = 0
-
-    # --- 10. OI Change x Price Change Interaction ---
-    # Hypothesis: Combined momentum confirms trends or signals divergences.
-    # Using 1-day OI change for closer interaction timing, assuming oi_change_1d exists or can be calc'd easily
-    if oi_col and oi_col in df_feat.columns: # Recalculate 1d OI change if not present
-         if 'oi_change_1d' not in df_feat.columns:
-              df_feat['oi_change_1d'] = df_feat[oi_col].pct_change(periods=1)
-         df_feat['oi_change_x_price_change'] = df_feat['oi_change_1d'] * df_feat['price_return']
-    else:
-         print(f"Warning: Columns needed for oi_change_x_price_change not found ('{oi_col}', 'price_return').")
-         df_feat['oi_change_x_price_change'] = 0
-
-
-    # --- Select only the core features for the final DataFrame ---
-    core_features_list = [
-        "price_return",
-        "volatility_10d",
-        "funding_rate_change_1d",
-        "funding_rate_extreme_flag",
-        "active_addr_roc_14d",
-        "inflow_vol_ratio",
-        "oi_roc_7d",
-        "lsr_zscore_90d", # Keep Z-score, it's more informative than just the flag
-        # "lsr_extreme_flag", # Can be excluded if Z-score is used, or keep both
-        "oi_change_x_price_change"
-    ]
-    # Also add back 'close' column needed for backtesting calculations downstream
+    
+    # --- Also add back 'close' column needed for backtesting calculations downstream ---
     if close_col in df.columns:
-         core_features_list.append(close_col)
-
-    df_final_feat = df_feat[[col for col in core_features_list if col in df_feat.columns]].copy()
-
-
-    # --- Clean up NaNs/Infs introduced by calculations in the final selection ---
-    df_final_feat.fillna(method='ffill', inplace=True)
-    df_final_feat.fillna(method='bfill', inplace=True)
-    df_final_feat.fillna(0, inplace=True) # Fill any remaining NaNs with 0
-    df_final_feat.replace([np.inf, -np.inf], 0, inplace=True)
-
+        calculated_features.append(close_col)
+    
+    print(f"\nSuccessfully calculated {len(calculated_features)} features: {calculated_features}")
+    
+    # --- Select only features that were actually calculated ---
+    df_final_feat = df_feat[calculated_features].copy()
+    
+    # --- Clean up NaNs/Infs ---
+    df_final_feat = df_final_feat.ffill()  # Forward fill NaNs
+    df_final_feat = df_final_feat.bfill()  # Backward fill any remaining NaNs
+    df_final_feat = df_final_feat.fillna(0)  # Fill any remaining NaNs with 0
+    df_final_feat = df_final_feat.replace([np.inf, -np.inf], 0)  # Replace infinities with 0
+    
     print(f"Core features engineered. Data shape: {df_final_feat.shape}")
-    print(f"Engineered columns available: {df_final_feat.columns.tolist()}")
-
-    # Ensure no NaNs/Infs remain in the final DataFrame before returning
-    if df_final_feat.isnull().values.any() or np.isinf(df_final_feat.select_dtypes(include=np.number)).values.any():
-         print("Warning: NaNs or Infs still present after cleaning!")
-         # Optional: Implement stricter cleaning or return None
-         # df_final_feat = df_final_feat.fillna(0).replace([np.inf, -np.inf], 0) # Re-apply just in case
-
+    
     return df_final_feat
 
 
@@ -344,30 +468,30 @@ def generate_full_eda_heatmap(df_raw, final_column_names, full_feature_list_from
              df_eda['price_range_ratio_ohlc'] = (df_eda[high_col] - df_eda[low_col]) / df_eda[close_col].replace(0, np.nan)
         if open_col in df_eda.columns:
              df_eda['price_body_ratio_ohlc'] = (df_eda[close_col] - df_eda[open_col]).abs() / df_eda[close_col].replace(0, np.nan)
-    df_eda['volatility_10d'] = df_eda['price_return'].rolling(window=10).std()
+    df_eda['volatility_24h'] = df_eda['price_return'].rolling(window=24).std() # Changed from 10d to 24h
 
     # --- FUNDING ---
     if funding_col and funding_col in df_eda.columns:
         df_eda['cryptoquant_funding_rate'] = df_eda[funding_col] # Keep raw
-        df_eda['funding_rate_change_1d'] = df_eda[funding_col].diff()
-        df_eda['funding_rate_MA_7d'] = df_eda[funding_col].rolling(window=7).mean()
+        df_eda['funding_rate_change_1h'] = df_eda[funding_col].diff() # 1 hour diff
+        df_eda['funding_rate_MA_24h'] = df_eda[funding_col].rolling(window=24).mean() # 24 hour MA
         # Basic percentile/flag (copy from engineer_features)
-        rolling_window_90d = 90
-        lower_bound = df_eda[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.05)
-        upper_bound = df_eda[funding_col].rolling(window=rolling_window_90d, min_periods=int(rolling_window_90d*0.8)).quantile(0.95)
+        rolling_window_eda = 24*7 # Use 168 hours (7 days) for EDA extremes
+        lower_bound = df_eda[funding_col].rolling(window=rolling_window_eda, min_periods=int(rolling_window_eda*0.8)).quantile(0.05)
+        upper_bound = df_eda[funding_col].rolling(window=rolling_window_eda, min_periods=int(rolling_window_eda*0.8)).quantile(0.95)
         df_eda['funding_rate_extreme_flag'] = ((df_eda[funding_col] < lower_bound) | (df_eda[funding_col] > upper_bound)).astype(int)
         # Add more funding features here if desired for EDA plot...
 
     # --- ACTIVE ADDR ---
     if active_col and active_col in df_eda.columns:
         df_eda['glassnode_active_addr_value'] = df_eda[active_col] # Keep raw
-        df_eda['active_addr_roc_14d'] = df_eda[active_col].pct_change(periods=14)
+        df_eda['active_addr_roc_24h'] = df_eda[active_col].pct_change(periods=24) # Changed from 14d to 24h
         # Add more active addr features here...
 
     # --- TX COUNT ---
     if tx_col and tx_col in df_eda.columns:
         df_eda['glassnode_tx_count_value'] = df_eda[tx_col] # Keep raw
-        df_eda['tx_count_roc_14d'] = df_eda[tx_col].pct_change(periods=14)
+        df_eda['tx_count_roc_24h'] = df_eda[tx_col].pct_change(periods=24) # Changed from 14d to 24h
 
      # --- COMBINED/RATIO ---
     if active_col and tx_col and active_col in df_eda.columns and tx_col in df_eda.columns:
@@ -385,32 +509,32 @@ def generate_full_eda_heatmap(df_raw, final_column_names, full_feature_list_from
             df_eda['inflow_vol_ratio'] = (numerator / denominator) # Already calculated, maybe keep
         # Add inflow spike flag etc.
 
-    # --- OI ---
+    # --- OI --- # Changed to 24h ROC
     if oi_col and oi_col in df_eda.columns:
         df_eda['coinglass_oi_value'] = df_eda[oi_col] # Keep raw
-        df_eda['oi_roc_7d'] = df_eda[oi_col].pct_change(periods=7)
+        df_eda['oi_roc_24h'] = df_eda[oi_col].pct_change(periods=24) # Changed from 7d to 24h
         # Add other OI features...
 
     # --- LSR ---
     if lsr_col and lsr_col in df_eda.columns:
         df_eda['coinglass_lsr_value'] = df_eda[lsr_col] # Keep raw
-        df_eda['lsr_MA_7d'] = df_eda[lsr_col].rolling(window=7).mean()
+        df_eda['lsr_MA_24h'] = df_eda[lsr_col].rolling(window=24).mean() # Changed from 7d to 24h
         # Basic Z-score/flag (copy from engineer_features)
-        rolling_window_90d_lsr = 90
+        rolling_window_eda_lsr = 24*7 # Use 168 hours (7 days) for EDA extremes
         lsr_series = pd.to_numeric(df_eda[lsr_col], errors='coerce')
-        rolling_mean = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).mean()
-        rolling_std = lsr_series.rolling(window=rolling_window_90d_lsr, min_periods=int(rolling_window_90d_lsr*0.8)).std()
-        df_eda['lsr_zscore_90d'] = (lsr_series - rolling_mean) / rolling_std.replace(0, np.nan)
+        rolling_mean = lsr_series.rolling(window=rolling_window_eda_lsr, min_periods=int(rolling_window_eda_lsr*0.8)).mean()
+        rolling_std = lsr_series.rolling(window=rolling_window_eda_lsr, min_periods=int(rolling_window_eda_lsr*0.8)).std()
+        df_eda['lsr_zscore_168h'] = (lsr_series - rolling_mean) / rolling_std.replace(0, np.nan)
         z_threshold = 2.0
-        df_eda['lsr_extreme_flag'] = ((df_eda['lsr_zscore_90d'] > z_threshold) | (df_eda['lsr_zscore_90d'] < -z_threshold)).astype(int)
+        df_eda['lsr_extreme_flag'] = ((df_eda['lsr_zscore_168h'] > z_threshold) | (df_eda['lsr_zscore_168h'] < -z_threshold)).astype(int)
         # Add more LSR features...
 
     # --- INTERACTIONS ---
     # Calculate oi_change_1d if needed for interaction
-    if oi_col in df_eda.columns and 'oi_change_1d' not in df_eda.columns:
-         df_eda['oi_change_1d'] = df_eda[oi_col].pct_change(periods=1)
-    if 'oi_change_1d' in df_eda.columns and 'price_return' in df_eda.columns:
-         df_eda['oi_change_x_price_change'] = df_eda['oi_change_1d'] * df_eda['price_return']
+    if oi_col in df_eda.columns and 'oi_change_1h' not in df_eda.columns:
+         df_eda['oi_change_1h'] = df_eda[oi_col].pct_change(periods=1) # 1 hour change
+    if 'oi_change_1h' in df_eda.columns and 'price_return' in df_eda.columns:
+         df_eda['oi_change_x_price_change'] = df_eda['oi_change_1h'] * df_eda['price_return']
      # Add funding_rate_x_oi_change if needed
 
 
@@ -549,117 +673,187 @@ def run_backtest(df, fee_percent, start_value=1000.0, verbose=True):
     return df_backtest
 
 # --- Performance Metrics (Adapted for Portfolio Value) ---
-def calculate_performance(df_backtest, fee_percent, start_value=1000.0): # Pass start_value if needed
-    """Calculates performance metrics, including T-test on returns."""
-    print("Calculating performance metrics...")
+# --- Performance Metrics (Fixed for Hourly Data) ---
+def calculate_performance(df_backtest, fee_percent, timeframe='daily', start_value=1.0):
+    """Calculates performance metrics, adapting annualization for timeframe."""
+    print(f"Calculating performance metrics (Timeframe: {timeframe})...")
     results = {}
     if df_backtest is None or df_backtest.empty:
         print("Error: No backtest results DataFrame provided.")
         # Return empty or default dictionary
         return {
             'Total Return (%)': 0, 'Annualized Sharpe Ratio': 0, 'Sortino Ratio (qs)': 'N/A',
-            'Maximum Drawdown (%)': 0, 'Trade Frequency (%)': 0, 'Number of Trades': 0
+            'Maximum Drawdown (%)': 0, 'Trade Frequency (%)': 0, 'Number of Trades': 0,
+            'T-statistic (vs 0)': 'N/A', 'P-value (vs 0)': 'N/A'
         }
+
+    # --- Calculate Portfolio Value if missing (based on net returns) ---
+    if 'strategy_portfolio_value' not in df_backtest.columns and 'strategy_return_net' in df_backtest.columns:
+        print("Calculating portfolio value from net returns...")
+        df_backtest['strategy_portfolio_value'] = start_value * (1 + df_backtest['strategy_return_net']).cumprod()
+        # Handle initial NaN if pct_change started with NaN
+        df_backtest['strategy_portfolio_value'].fillna(start_value, inplace=True)
 
     # Ensure index is datetime for frequency calculations
     if not isinstance(df_backtest.index, pd.DatetimeIndex):
-         print("Warning: DataFrame index is not DatetimeIndex. Converting...")
-         try:
-             df_backtest.index = pd.to_datetime(df_backtest.index)
-         except Exception as e:
-             print(f"Error converting index to DatetimeIndex: {e}. Time-based metrics might be inaccurate.")
+        print("Warning: DataFrame index is not DatetimeIndex. Converting...")
+        try:
+            df_backtest.index = pd.to_datetime(df_backtest.index)
+        except Exception as e:
+            print(f"Error converting index to DatetimeIndex: {e}. Time-based metrics might be inaccurate.")
 
-    # --- Calculate metrics based on PORTFOLIO VALUE ---
+    # --- Calculate metrics based on PORTFOLIO VALUE and RETURNS ---
 
-    # Total Return
+    # Total Return - FIX: Use first non-NaN value as starting point
     if 'strategy_portfolio_value' in df_backtest.columns and not df_backtest['strategy_portfolio_value'].empty:
-        final_value = df_backtest['strategy_portfolio_value'].iloc[-1]
-        total_return_pct = ((final_value / start_value) - 1) * 100
-        results['Total Return (%)'] = total_return_pct
+        # Get first valid portfolio value (handling potential NaNs at start)
+        start_idx = df_backtest['strategy_portfolio_value'].first_valid_index()
+        if start_idx is not None:
+            start_value_actual = df_backtest.loc[start_idx, 'strategy_portfolio_value']
+            final_value = df_backtest['strategy_portfolio_value'].iloc[-1]
+            
+            # Check if values make sense before calculating
+            if pd.notnull(final_value) and pd.notnull(start_value_actual) and start_value_actual > 0:
+                total_return_pct = ((final_value / start_value_actual) - 1) * 100
+                # Sanity check - cap extreme values that are likely calculation errors
+                if total_return_pct > 10000:  # Cap at 10,000% which is still extremely high
+                    print(f"Warning: Capping unrealistic return of {total_return_pct:.2f}% to 10,000%")
+                    total_return_pct = 10000.0
+                results['Total Return (%)'] = total_return_pct
+            else:
+                results['Total Return (%)'] = 0
+                print("Warning: Invalid portfolio values detected (NaN or negative). Setting total return to 0%.")
+        else:
+            results['Total Return (%)'] = 0
+            print("Warning: No valid portfolio values found. Setting total return to 0%.")
     else:
         results['Total Return (%)'] = 0
-        print("Warning: Could not calculate Total Return.")
+        print("Warning: Could not calculate Total Return ('strategy_portfolio_value' missing or empty).")
 
-    # Sharpe & Sortino based on DAILY returns
+    # Sharpe & Sortino based on PERIODIC returns
     if 'strategy_return_net' in df_backtest.columns:
         net_returns = df_backtest['strategy_return_net'].fillna(0)
+        
+        # Clean extreme values that might be calculation errors (over 100% in a single period)
+        if abs(net_returns).max() > 1.0:
+            extreme_count = (abs(net_returns) > 1.0).sum()
+            if extreme_count > 0:
+                print(f"Warning: Found {extreme_count} extreme return values (>100%). Capping for Sharpe calculation.")
+                net_returns = net_returns.clip(-1.0, 1.0)
 
-        if isinstance(df_backtest.index, pd.DatetimeIndex) and len(df_backtest.index) > 1:
-            time_diff = df_backtest.index.to_series().diff().median()
-            periods_per_year = pd.Timedelta(days=365) / time_diff if time_diff and time_diff.total_seconds() > 0 else 252
+        # --- Determine Periods Per Year based on timeframe ---
+        if timeframe == 'hourly':
+            periods_per_year = 365 * 24  # Use calendar hours for crypto
+            print(f"Using periods_per_year = {periods_per_year} for hourly data.")
+        elif timeframe == 'daily':
+            # Try inferring based on median difference, default to 252 if fails
+            if isinstance(df_backtest.index, pd.DatetimeIndex) and len(df_backtest.index) > 1:
+                time_diff = df_backtest.index.to_series().diff().median()
+                # Check if time_diff is valid and close to 1 day
+                if pd.notna(time_diff) and time_diff.total_seconds() > 0:
+                    if pd.Timedelta(hours=23) <= time_diff <= pd.Timedelta(hours=25):
+                        periods_per_year = 365  # Assume calendar days if median diff is daily
+                        print(f"Detected daily data (median diff), using periods_per_year = {periods_per_year}.")
+                    else:
+                        periods_per_year = pd.Timedelta(days=365) / time_diff  # Infer from actual median diff
+                        print(f"Inferred periods_per_year = {periods_per_year:.2f} from median time diff.")
+                else:
+                    periods_per_year = 252  # Fallback for daily
+                    print(f"Warning: Could not infer daily frequency. Defaulting periods_per_year to {periods_per_year}.")
+            else:
+                periods_per_year = 252  # Fallback for daily
+                print(f"Warning: No DatetimeIndex or insufficient data. Defaulting periods_per_year to {periods_per_year}.")
+        else:  # Handle other timeframes or default
+            periods_per_year = 252  # Default if timeframe unspecified or unknown
+            print(f"Warning: Unknown timeframe '{timeframe}'. Defaulting periods_per_year to {periods_per_year}.")
+
+        mean_periodic_return = net_returns.mean()
+        std_dev_periodic_return = net_returns.std()
+
+        # Annualized Sharpe calculation
+        if std_dev_periodic_return > 0 and periods_per_year > 0:
+            sharpe_ratio = (mean_periodic_return * np.sqrt(periods_per_year)) / std_dev_periodic_return
         else:
-            periods_per_year = 252
-            print("Warning: Could not accurately determine periods_per_year. Defaulting to 252.")
-
-        mean_return = net_returns.mean()
-        std_dev = net_returns.std()
-        # Simple Annualized Sharpe calculation from daily returns
-        sharpe_ratio = (mean_return * periods_per_year) / (std_dev * np.sqrt(periods_per_year)) if std_dev != 0 and periods_per_year > 0 else 0
+            sharpe_ratio = 0
+            print("Warning: Standard deviation is zero or periods_per_year invalid. Sharpe ratio set to 0.")
         results['Annualized Sharpe Ratio'] = sharpe_ratio
 
         # Optional: Sortino Ratio (using quantstats)
         try:
-            if isinstance(net_returns.index, pd.DatetimeIndex):
-                 # Ensure quantstats is imported: import quantstats as qs
-                 results['Sortino Ratio (qs)'] = qs.stats.sortino(net_returns, periods=periods_per_year)
-            else:
-                 results['Sortino Ratio (qs)'] = 'N/A (Requires DatetimeIndex)'
+            # quantstats expects series with datetime index for correct period inference if periods not given
+            # Provide the calculated periods_per_year
+            results['Sortino Ratio (qs)'] = qs.stats.sortino(net_returns, periods=periods_per_year)
         except NameError:
-             results['Sortino Ratio (qs)'] = 'N/A (quantstats not installed)'
+            results['Sortino Ratio (qs)'] = 'N/A (quantstats not installed)'
         except Exception as e:
-             results['Sortino Ratio (qs)'] = f'Error ({type(e).__name__})'
-             print(f"Error calculating quantstats Sortino Ratio: {e}")
+            results['Sortino Ratio (qs)'] = f'Error ({type(e).__name__})'
+            print(f"Error calculating quantstats Sortino Ratio: {e}")
     else:
-         results['Annualized Sharpe Ratio'] = 0
-         results['Sortino Ratio (qs)'] = 'N/A'
-         print("Warning: 'strategy_return_net' column missing for Sharpe/Sortino.")
+        results['Annualized Sharpe Ratio'] = 0
+        results['Sortino Ratio (qs)'] = 'N/A'
+        print("Warning: 'strategy_return_net' column missing for Sharpe/Sortino.")
 
-    # Maximum Drawdown based on Portfolio Value
+    # Maximum Drawdown based on Portfolio Value - FIX: Handle extreme values
     if 'strategy_portfolio_value' in df_backtest.columns and not df_backtest['strategy_portfolio_value'].empty:
-        portfolio_value = df_backtest['strategy_portfolio_value']
+        portfolio_value = df_backtest['strategy_portfolio_value'].copy()
+        
+        # Clean portfolio values to remove potential errors
+        if portfolio_value.min() <= 0:
+            print("Warning: Found non-positive portfolio values. Cleaning for drawdown calculation.")
+            portfolio_value = portfolio_value.clip(lower=0.001)  # Set minimum to small positive
+        
         running_max = portfolio_value.cummax()
         # Ensure running_max is not zero before dividing
-        drawdown = (portfolio_value - running_max) / running_max.replace(0, np.nan)
+        drawdown = (portfolio_value - running_max) / running_max.replace(0, np.nan)  # Avoid division by zero
         max_drawdown = drawdown.min()
+        
+        # Sanity check - drawdown shouldn't be lower than -100%
+        if max_drawdown < -1.0:
+            print(f"Warning: Fixing unrealistic drawdown of {max_drawdown*100:.2f}% to -100%")
+            max_drawdown = -1.0
+            
         results['Maximum Drawdown (%)'] = (max_drawdown * 100) if pd.notna(max_drawdown) else 0
     else:
         results['Maximum Drawdown (%)'] = 0
-        print("Warning: Could not calculate Maximum Drawdown.")
+        print("Warning: Could not calculate Maximum Drawdown ('strategy_portfolio_value' missing or empty).")
 
-    # Trade Frequency (remains the same calculation)
+    # Trade Frequency (remains the same calculation - per data row)
     if 'trade' in df_backtest.columns:
-         num_trades = (df_backtest['trade'] != 0).sum()
-         total_rows = len(df_backtest)
-         trade_frequency = (num_trades / total_rows) * 100 if total_rows > 0 else 0
-         results['Trade Frequency (%)'] = trade_frequency
-         results['Number of Trades'] = num_trades
+        num_trades = (df_backtest['trade'] != 0).sum()
+        total_rows = len(df_backtest)
+        trade_frequency = (num_trades / total_rows) * 100 if total_rows > 0 else 0
+        results['Trade Frequency (%)'] = trade_frequency
+        results['Number of Trades'] = num_trades
     else:
-         results['Trade Frequency (%)'] = 0
-         results['Number of Trades'] = 0
-         print("Warning: 'trade' column not found for frequency calculation.")
+        results['Trade Frequency (%)'] = 0
+        results['Number of Trades'] = 0
+        print("Warning: 'trade' column not found for frequency calculation.")
 
-    # --- Add T-test on Net Returns ---
+    # T-test on Net Returns (remains the same calculation - tests if mean return is different from zero)
     if 'strategy_return_net' in df_backtest.columns:
         net_returns = df_backtest['strategy_return_net'].fillna(0)
-        if len(net_returns) > 1: # Need more than 1 sample for t-test
-            t_stat, p_value = ttest_1samp(net_returns, 0)
-            results['T-statistic (vs 0)'] = t_stat
-            results['P-value (vs 0)'] = p_value
+        if len(net_returns) > 1:
+            try:
+                t_stat, p_value = ttest_1samp(net_returns, 0)
+                results['T-statistic (vs 0)'] = t_stat
+                results['P-value (vs 0)'] = p_value
+            except Exception as e:
+                results['T-statistic (vs 0)'] = f'Error ({type(e).__name__})'
+                results['P-value (vs 0)'] = f'Error ({type(e).__name__})'
+                print(f"Error calculating T-test: {e}")
         else:
             results['T-statistic (vs 0)'] = 'N/A (Too few samples)'
             results['P-value (vs 0)'] = 'N/A (Too few samples)'
     else:
-         results['T-statistic (vs 0)'] = 'N/A (No returns column)'
-         results['P-value (vs 0)'] = 'N/A (No returns column)'
-    # --- End T-test ---
+        results['T-statistic (vs 0)'] = 'N/A (No returns column)'
+        results['P-value (vs 0)'] = 'N/A (No returns column)'
 
     print("\n--- Performance Summary ---")
-    # ... (keep existing printing logic) ...
     for key, value in results.items():
-        if isinstance(value, (int, float)):
-             print(f"{key}: {value:.4f}")
+        if isinstance(value, (int, float, np.number)):  # Check if numeric
+            print(f"{key}: {value:.4f}")
         else:
-             print(f"{key}: {value}")
+            print(f"{key}: {value}")
     print("---------------------------\n")
 
     return results
@@ -1033,7 +1227,7 @@ def run_and_evaluate_test_period(df_features, states, config, period_label="Test
     df_results = run_backtest(df_signals, config['trading_fee_percent'])
 
     print(f"\n--- FINAL {period_label.upper()} PERFORMANCE ---")
-    performance_summary = calculate_performance(df_results, config['trading_fee_percent'])
+    performance_summary = calculate_performance(df_results, config['trading_fee_percent'], timeframe=config['data_timeframe'])
 
     return df_results, performance_summary
 
@@ -1311,10 +1505,17 @@ def run_permutation_test(df_signals_original, config, period_label="Permutation"
         if isinstance(results_shuffled.index, pd.DatetimeIndex) and len(results_shuffled.index) > 1:
              time_diff = results_shuffled.index.to_series().diff().median()
              periods_per_year = pd.Timedelta(days=365) / time_diff if time_diff and time_diff.total_seconds() > 0 else 252
-        else: periods_per_year = 252
+             # --- ADJUSTMENT FOR HOURLY ---
+             if time_diff == pd.Timedelta(hours=1):
+                 periods_per_year = 24 * 365
+             elif periods_per_year == 252: # Fallback if frequency is not daily
+                 periods_per_year = 24 * 365
+             # --- END ADJUSTMENT ---
+        else: periods_per_year = 24 * 365
+
         mean_ret = net_returns_shuffled.mean()
         std_dev = net_returns_shuffled.std()
-        sharpe = (mean_ret * periods_per_year) / (std_dev * np.sqrt(periods_per_year)) if std_dev != 0 and periods_per_year > 0 else 0
+        sharpe = (mean_ret * periods_per_year) / (std_dev * np.sqrt(periods_per_year)) if std_dev != 0 and pd.notna(std_dev) and periods_per_year > 0 else 0 # Added pd.notna check
 
         # Store relevant metrics
         shuffled_results_list.append({'Sharpe': sharpe}) # Add 'Total Return %', etc. if needed

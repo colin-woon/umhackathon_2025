@@ -507,76 +507,148 @@ def generate_signals(df_with_state, signal_map): # Takes DataFrame with 'state' 
     print("Signals generated.")
     return df
 
-# --- Backtesting ---
-def run_backtest(df, fee_percent):
-    """Runs the backtest simulation and calculates PnL."""
+# --- Backtesting (Modified for B&H and Starting Value) ---
+def run_backtest(df, fee_percent, start_value=1000.0): # Added start_value
+    """
+    Runs the backtest simulation, calculates PnL, strategy equity,
+    and Buy & Hold equity.
+    """
     print("Running backtest...")
+    if 'close' not in df.columns or 'signal' not in df.columns:
+         print("Error: DataFrame missing 'close' or 'signal' column for backtest.")
+         return None
+
     df_backtest = df.copy()
-    cash = 1.0 # Start with $1 unit of cash
-    position = 0.0 # Start with 0 units of the asset
-    portfolio_value = [cash]
 
-    # Use vectorized approach for speed where possible
-    df_backtest['position'] = df_backtest['signal'].shift(1).fillna(0) # Trade on next bar's open based on previous signal
-    df_backtest['price_change'] = df_backtest['close'].diff().fillna(0)
+    # Strategy Calculation
+    df_backtest['position'] = df_backtest['signal'].shift(1).fillna(0) # Trade based on previous signal
+    df_backtest['price_change_pct'] = df_backtest['close'].pct_change().fillna(0) # Use pct_change
+    df_backtest['strategy_return_gross'] = df_backtest['position'] * df_backtest['price_change_pct']
 
-    # Calculate returns based on holding the position
-    df_backtest['strategy_return_gross'] = df_backtest['position'] * df_backtest['close'].pct_change().fillna(0)
-
-    # Calculate trade occurrences
+    # Calculate trade occurrences for fees and markers
     df_backtest['trade'] = df_backtest['position'].diff().fillna(0)
     trades = df_backtest[df_backtest['trade'] != 0]
 
     # Apply trading fees
-    fees = abs(df_backtest['trade']) * fee_percent
+    fees = abs(df_backtest['trade']) * fee_percent # Fee applied on position change value? Or % of trade? Assuming % for now.
+    # A more realistic fee might be: abs(df_backtest['trade']) * df_backtest['close'] * fee_percent / portfolio_value_at_trade
+    # For simplicity, applying fee directly to return (approximation)
     df_backtest['strategy_return_net'] = df_backtest['strategy_return_gross'] - fees
 
-    # Calculate cumulative returns
-    df_backtest['cumulative_strategy_return_net'] = (1 + df_backtest['strategy_return_net']).cumprod()
+    # Calculate cumulative returns *relative to 1* first
+    df_backtest['cumulative_strategy_relative'] = (1 + df_backtest['strategy_return_net']).cumprod()
+    # Calculate actual portfolio value starting from start_value
+    df_backtest['strategy_portfolio_value'] = start_value * df_backtest['cumulative_strategy_relative']
+
+
+    # Buy and Hold Calculation
+    df_backtest['asset_return'] = df_backtest['close'].pct_change().fillna(0)
+    df_backtest['buy_and_hold_relative'] = (1 + df_backtest['asset_return']).cumprod()
+    df_backtest['buy_and_hold_portfolio_value'] = start_value * df_backtest['buy_and_hold_relative']
+
 
     print("Backtest finished.")
+    # Return df with all calculations including portfolio values and trade markers
     return df_backtest
 
-
-# --- Performance Metrics ---
-def calculate_performance(df_backtest, fee_percent):
-    """Calculates performance metrics."""
+# --- Performance Metrics (Adapted for Portfolio Value) ---
+def calculate_performance(df_backtest, fee_percent, start_value=1000.0): # Pass start_value if needed
+    """Calculates performance metrics based on portfolio value."""
     print("Calculating performance metrics...")
     results = {}
-    net_returns = df_backtest['strategy_return_net']
+    if df_backtest is None or df_backtest.empty:
+        print("Error: No backtest results DataFrame provided.")
+        # Return empty or default dictionary
+        return {
+            'Total Return (%)': 0, 'Annualized Sharpe Ratio': 0, 'Sortino Ratio (qs)': 'N/A',
+            'Maximum Drawdown (%)': 0, 'Trade Frequency (%)': 0, 'Number of Trades': 0
+        }
+
+    # Ensure index is datetime for frequency calculations
+    if not isinstance(df_backtest.index, pd.DatetimeIndex):
+         print("Warning: DataFrame index is not DatetimeIndex. Converting...")
+         try:
+             df_backtest.index = pd.to_datetime(df_backtest.index)
+         except Exception as e:
+             print(f"Error converting index to DatetimeIndex: {e}. Time-based metrics might be inaccurate.")
+
+    # --- Calculate metrics based on PORTFOLIO VALUE ---
 
     # Total Return
-    total_return = df_backtest['cumulative_strategy_return_net'].iloc[-1] - 1
-    results['Total Return (%)'] = total_return * 100
+    if 'strategy_portfolio_value' in df_backtest.columns and not df_backtest['strategy_portfolio_value'].empty:
+        final_value = df_backtest['strategy_portfolio_value'].iloc[-1]
+        total_return_pct = ((final_value / start_value) - 1) * 100
+        results['Total Return (%)'] = total_return_pct
+    else:
+        results['Total Return (%)'] = 0
+        print("Warning: Could not calculate Total Return.")
 
-    # Sharpe Ratio (Annualized, assuming daily returns if freq is daily, adjust risk-free rate and periods per year)
-    # Infer frequency for annualization factor (basic example)
-    time_diff = df_backtest.index.to_series().diff().median()
-    periods_per_year = pd.Timedelta(days=365) / time_diff if time_diff else 252 # Default to 252 trading days if freq unknown
-    mean_return = net_returns.mean()
-    std_dev = net_returns.std()
-    # Avoid division by zero if std_dev is 0
-    sharpe_ratio = (mean_return / std_dev) * np.sqrt(periods_per_year) if std_dev != 0 else 0
-    results['Annualized Sharpe Ratio'] = sharpe_ratio
+    # Sharpe & Sortino based on DAILY returns
+    if 'strategy_return_net' in df_backtest.columns:
+        net_returns = df_backtest['strategy_return_net'].fillna(0)
 
-    # Maximum Drawdown
-    cumulative_returns = df_backtest['cumulative_strategy_return_net']
-    running_max = cumulative_returns.cummax()
-    drawdown = (cumulative_returns - running_max) / running_max
-    max_drawdown = drawdown.min()
-    results['Maximum Drawdown (%)'] = max_drawdown * 100
+        if isinstance(df_backtest.index, pd.DatetimeIndex) and len(df_backtest.index) > 1:
+            time_diff = df_backtest.index.to_series().diff().median()
+            periods_per_year = pd.Timedelta(days=365) / time_diff if time_diff and time_diff.total_seconds() > 0 else 252
+        else:
+            periods_per_year = 252
+            print("Warning: Could not accurately determine periods_per_year. Defaulting to 252.")
 
-    # Trade Frequency
-    num_trades = (df_backtest['trade'] != 0).sum()
-    total_rows = len(df_backtest)
-    trade_frequency = (num_trades / total_rows) * 100 if total_rows > 0 else 0
-    results['Trade Frequency (%)'] = trade_frequency
-    results['Number of Trades'] = num_trades
+        mean_return = net_returns.mean()
+        std_dev = net_returns.std()
+        # Simple Annualized Sharpe calculation from daily returns
+        sharpe_ratio = (mean_return * periods_per_year) / (std_dev * np.sqrt(periods_per_year)) if std_dev != 0 and periods_per_year > 0 else 0
+        results['Annualized Sharpe Ratio'] = sharpe_ratio
+
+        # Optional: Sortino Ratio (using quantstats)
+        try:
+            if isinstance(net_returns.index, pd.DatetimeIndex):
+                 # Ensure quantstats is imported: import quantstats as qs
+                 results['Sortino Ratio (qs)'] = qs.stats.sortino(net_returns, periods=periods_per_year)
+            else:
+                 results['Sortino Ratio (qs)'] = 'N/A (Requires DatetimeIndex)'
+        except NameError:
+             results['Sortino Ratio (qs)'] = 'N/A (quantstats not installed)'
+        except Exception as e:
+             results['Sortino Ratio (qs)'] = f'Error ({type(e).__name__})'
+             print(f"Error calculating quantstats Sortino Ratio: {e}")
+    else:
+         results['Annualized Sharpe Ratio'] = 0
+         results['Sortino Ratio (qs)'] = 'N/A'
+         print("Warning: 'strategy_return_net' column missing for Sharpe/Sortino.")
+
+    # Maximum Drawdown based on Portfolio Value
+    if 'strategy_portfolio_value' in df_backtest.columns and not df_backtest['strategy_portfolio_value'].empty:
+        portfolio_value = df_backtest['strategy_portfolio_value']
+        running_max = portfolio_value.cummax()
+        # Ensure running_max is not zero before dividing
+        drawdown = (portfolio_value - running_max) / running_max.replace(0, np.nan)
+        max_drawdown = drawdown.min()
+        results['Maximum Drawdown (%)'] = (max_drawdown * 100) if pd.notna(max_drawdown) else 0
+    else:
+        results['Maximum Drawdown (%)'] = 0
+        print("Warning: Could not calculate Maximum Drawdown.")
+
+    # Trade Frequency (remains the same calculation)
+    if 'trade' in df_backtest.columns:
+         num_trades = (df_backtest['trade'] != 0).sum()
+         total_rows = len(df_backtest)
+         trade_frequency = (num_trades / total_rows) * 100 if total_rows > 0 else 0
+         results['Trade Frequency (%)'] = trade_frequency
+         results['Number of Trades'] = num_trades
+    else:
+         results['Trade Frequency (%)'] = 0
+         results['Number of Trades'] = 0
+         print("Warning: 'trade' column not found for frequency calculation.")
 
 
     print("\n--- Performance Summary ---")
+    # ... (keep existing printing logic) ...
     for key, value in results.items():
-        print(f"{key}: {value:.4f}")
+        if isinstance(value, (int, float)):
+             print(f"{key}: {value:.4f}")
+        else:
+             print(f"{key}: {value}")
     print("---------------------------\n")
 
     return results
@@ -945,39 +1017,77 @@ def plot_correlation_heatmap(corr_matrix, feature_names, output_path):
         print(f"Error saving correlation heatmap: {e}")
     plt.close() # Close the plot to free memory
 
-def plot_equity_curves(results_bt, results_ft, output_path):
-    """Generates and saves equity curves for backtest and forward test."""
+# --- Plotting Functions (Enhanced Equity Curve) ---
+def plot_equity_curves(results_bt, results_ft, output_path, start_value=1000.0):
+    """
+    Generates and saves equity curves for backtest, forward test,
+    and Buy & Hold benchmark, including trade markers.
+    """
     if results_bt is None or results_ft is None:
         print("Skipping equity curve plot: Missing results data.")
         return
-    if 'cumulative_strategy_return_net' not in results_bt.columns or \
-       'cumulative_strategy_return_net' not in results_ft.columns:
-           print("Skipping equity curve plot: 'cumulative_strategy_return_net' column missing.")
+
+    # Check for necessary columns
+    required_cols = ['strategy_portfolio_value', 'buy_and_hold_portfolio_value', 'trade', 'position']
+    if not all(col in results_bt.columns for col in required_cols) or \
+       not all(col in results_ft.columns for col in required_cols):
+           print(f"Skipping equity curve plot: Missing one or more required columns: {required_cols}")
            return
 
-    print(f"Generating Equity Curves to: {output_path}")
-    plt.figure(figsize=(12, 6))
+    print(f"Generating Enhanced Equity Curves to: {output_path}")
+    plt.figure(figsize=(14, 7)) # Slightly wider figure
 
-    # Plot Backtest Equity (Portfolio Value starting from 1)
-    plt.plot(results_bt.index, results_bt['cumulative_strategy_return_net'], label='Backtest Equity')
+    # --- Plot Strategy Equity ---
+    plt.plot(results_bt.index, results_bt['strategy_portfolio_value'], label='Backtest Strategy Equity', color='tab:blue', lw=1.5)
+    plt.plot(results_ft.index, results_ft['strategy_portfolio_value'], label='Forward Test Strategy Equity', color='tab:orange', lw=1.5)
 
-    # Plot Forward Test Equity (Portfolio Value starting from 1)
-    # Ensure index alignment if needed, but usually separate plots or just concat works if dates are contiguous
-    # For simplicity, plotting on same axes assuming date index handles it.
-    plt.plot(results_ft.index, results_ft['cumulative_strategy_return_net'], label='Forward Test Equity')
+    # --- Plot Buy & Hold Equity ---
+    plt.plot(results_bt.index, results_bt['buy_and_hold_portfolio_value'], label='Backtest Buy & Hold', color='tab:gray', linestyle='--', lw=1)
+    # Plot forward test B&H starting from the BT end value for continuity if desired, or restart from start_value
+    # Simple restart from start_value for FT B&H:
+    # Recalculate FT B&H relative performance and scale
+    ft_asset_return = results_ft['close'].pct_change().fillna(0)
+    ft_bh_relative = (1 + ft_asset_return).cumprod()
+    ft_bh_value = start_value * ft_bh_relative
+    plt.plot(results_ft.index, ft_bh_value, label='Forward Test Buy & Hold', color='tab:pink', linestyle='--', lw=1)
 
-    plt.title('Strategy Equity Curve (Backtest vs Forward Test)')
+
+    # --- Plot Trade Markers ---
+    # Combine results temporarily for easier marker plotting across periods
+    # Ensure indices are compatible before combining if necessary
+    all_results = pd.concat([results_bt, results_ft]) # Assumes indices are continuous or comparable
+
+    # Identify trade execution points (where position changed)
+    trades = all_results[all_results['trade'] != 0].copy() # Use copy to avoid SettingWithCopyWarning
+
+    # Separate Buys (entering Long, position becomes 1) and Sells (entering Short, position becomes -1)
+    # Note: This captures entries. Closing trades (position -> 0) aren't marked separately here.
+    buy_entries = trades[trades['position'] == 1] # The row where the position *is* 1 (executed based on prev signal)
+    sell_entries = trades[trades['position'] == -1] # The row where the position *is* -1
+
+    # Plot markers using portfolio value at the time of the trade
+    if not buy_entries.empty:
+        plt.scatter(buy_entries.index, buy_entries['strategy_portfolio_value'],
+                    label='Buy Entry', marker='^', color='green', s=50, alpha=0.7, zorder=5) # zorder puts markers on top
+    if not sell_entries.empty:
+        plt.scatter(sell_entries.index, sell_entries['strategy_portfolio_value'],
+                    label='Sell Entry', marker='v', color='red', s=50, alpha=0.7, zorder=5)
+
+    # --- Formatting ---
+    plt.title(f'Strategy Equity Curve vs Buy & Hold (Start Value: {start_value})')
     plt.xlabel('Date')
-    plt.ylabel('Portfolio Value (Starting from 1)')
+    plt.ylabel(f'Portfolio Value (Starting from {start_value})')
+    plt.yscale('log') # Use log scale if values vary widely, optional
     plt.legend()
-    plt.grid(True)
+    plt.grid(True, which="both", ls="--", linewidth=0.5) # Grid for both major and minor ticks if log scale
     plt.tight_layout()
+
     try:
         plt.savefig(output_path)
-        print("Equity curve plot saved.")
+        print("Enhanced equity curve plot saved.")
     except Exception as e:
-        print(f"Error saving equity curve plot: {e}")
-    plt.close()
+        print(f"Error saving enhanced equity curve plot: {e}")
+    plt.close() # Close the plot to free memory
 
 # --- Saving Function ---
 def save_run_summary(config, performance_bt, performance_ft, stability_results, output_dir):

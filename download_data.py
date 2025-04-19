@@ -226,7 +226,7 @@ if __name__ == "__main__":
 
         df_data = fetch_data_from_api(
             api_key, base_url, task['source'], task['path'], task['params'],
-            task['start'], task['end']
+            task['start'], task['end'], config['page_limit']
         )
 
         if df_data is not None and not df_data.empty:
